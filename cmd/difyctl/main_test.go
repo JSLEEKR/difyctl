@@ -698,6 +698,70 @@ func TestCrossCommand_OversizeRejected(t *testing.T) {
 	}
 }
 
+// TestCrossCommand_MultiDocRejected is the Cycle H parity regression. yaml.v3
+// silently decodes only the first document of a multi-doc stream, so before
+// this fix:
+//   - `lint` would rule against doc #1 and ignore doc #2..N with no warning,
+//   - `diff` would compare doc #1 vs doc #1 and miss any breaking change
+//     hidden in doc #2,
+//   - `fmt -w` would REWRITE the user's multi-doc file with just doc #1,
+//     silently truncating on disk — classic data loss, same spirit as the
+//     Cycle E UTF-16 ASCII-stripping bug.
+//
+// All three subcommands must now refuse multi-doc input with exit code 3.
+func TestCrossCommand_MultiDocRejected(t *testing.T) {
+	dir := t.TempDir()
+	multi := "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n"
+	multiPath := filepath.Join(dir, "multi.yml")
+	if err := os.WriteFile(multiPath, []byte(multi), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goodPath := writeTemp(t, "g.yml", good)
+	origBytes, _ := os.ReadFile(multiPath)
+
+	for _, tc := range []struct {
+		name string
+		run  func() (int, error)
+	}{
+		{"lint", func() (int, error) {
+			var so, se bytes.Buffer
+			return runLint([]string{multiPath}, &so, &se)
+		}},
+		{"diff-first-arg", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{multiPath, goodPath}, &so, &se)
+		}},
+		{"diff-second-arg", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{goodPath, multiPath}, &so, &se)
+		}},
+		{"fmt", func() (int, error) {
+			var so, se bytes.Buffer
+			return runFmt([]string{multiPath}, &so, &se)
+		}},
+		{"fmt-w", func() (int, error) {
+			var so, se bytes.Buffer
+			return runFmt([]string{"-w", multiPath}, &so, &se)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, err := tc.run()
+			if code != 3 || err == nil {
+				t.Fatalf("want (3, err) for multi-doc input, got (%d, %v)", code, err)
+			}
+			if !strings.Contains(err.Error(), "multi-document") {
+				t.Fatalf("%s: error should mention multi-document, got %v", tc.name, err)
+			}
+		})
+	}
+	// Belt-and-suspenders: the file on disk MUST be untouched — this is the
+	// actual user-visible data-loss bug we are guarding against.
+	now, _ := os.ReadFile(multiPath)
+	if !bytes.Equal(origBytes, now) {
+		t.Fatalf("multi-doc file was mutated on disk:\nbefore:\n%s\nafter:\n%s", origBytes, now)
+	}
+}
+
 // TestCrossCommand_BareScalarRejected is Cycle G's answer to the Cycle F
 // open question (b): `fmt` used to happily serialise `42\n` for input `42`
 // while lint/diff rejected the same input with "root must be a mapping".

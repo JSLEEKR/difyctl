@@ -128,6 +128,58 @@ func TestLoadFile_ErrorMessageNotDuplicated(t *testing.T) {
 	}
 }
 
+// TestParseBytes_MultiDocRejected is the Cycle H regression: yaml.Unmarshal
+// silently consumes only the first document when the input contains multiple
+// YAML documents separated by `---`. Before the fix, lint/diff would rule
+// against doc #1 only (ignoring doc #2..N with NO warning) and — worse — a
+// follow-up `fmt -w` would rewrite the user's file to just doc #1, silently
+// truncating the rest. We now detect multi-doc up-front and refuse.
+func TestParseBytes_MultiDocRejected(t *testing.T) {
+	cases := map[string]string{
+		"two-docs": "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n",
+		"three-docs": "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n" +
+			"---\napp: {name: C, mode: workflow}\n",
+		"leading-doc-marker":   "---\napp: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n",
+		"second-doc-malformed": "app: {name: A, mode: workflow}\n---\nnot:\n  valid: : : yaml\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseBytes([]byte(src))
+			if err == nil {
+				t.Fatal("want error on multi-doc input, got nil")
+			}
+			if !errors.Is(err, ErrParse) {
+				t.Fatalf("want ErrParse, got %v", err)
+			}
+			if !errors.Is(err, ErrMultiDoc) && !strings.Contains(err.Error(), "multi-document") {
+				t.Fatalf("error should mention multi-document, got %v", err)
+			}
+		})
+	}
+}
+
+// TestIsMultiDoc_SingleDocs locks that ordinary single-doc YAML — including
+// streams that happen to contain a leading `---` marker before a single doc —
+// is NOT misclassified as multi-doc.
+func TestIsMultiDoc_SingleDocs(t *testing.T) {
+	cases := map[string]string{
+		"plain":            "app: {name: A, mode: workflow}\n",
+		"leading-marker":   "---\napp: {name: A, mode: workflow}\n",
+		"trailing-marker":  "app: {name: A, mode: workflow}\n---\n",
+		"empty":            "",
+		"only-whitespace":  "   \n\n",
+		"comment-only":     "# just a comment\n",
+		"trailing-newline": "app: {name: A, mode: workflow}\n\n\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			if IsMultiDoc([]byte(src)) {
+				t.Fatalf("IsMultiDoc classified single-doc %q as multi", src)
+			}
+		})
+	}
+}
+
 // TestLoadFile_TooLarge verifies that the MaxFileSize cap is enforced.
 func TestLoadFile_TooLarge(t *testing.T) {
 	dir := t.TempDir()

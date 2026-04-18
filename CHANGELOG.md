@@ -2,7 +2,11 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] — 2026-04-19 (Cycle C / D / E / F / G hardening)
+## [1.0.1] — 2026-04-19 (Cycle C / D / E / F / G / H hardening)
+
+### Fixed (Cycle H — multi-document YAML data-loss fix)
+- **HIGH: `fmt -w` on a multi-document YAML file no longer silently truncates the file.** yaml.v3's `Unmarshal` consumes only the first document of a `---`-separated stream and drops the rest; before the fix, `difyctl fmt -w multi.yml` would quietly rewrite the user's file to just doc #1 on disk — the exact class of silent-data-loss bug Cycle E fixed for UTF-16 inputs. Multi-doc streams now cause lint / diff / fmt to exit 3 with `multi-document YAML not supported (Dify DSL is single-document)`, and the file on disk is untouched.
+- **MED: `lint` / `diff` no longer silently ignore docs #2..N of a multi-document file.** Previously they ruled against doc #1 only, giving a misleading "clean" signal for files whose later documents violated rules. A trailing bare `---\n` (a common editor artifact following a single doc) is still accepted — only substantive additional documents trigger the reject.
 
 ### Fixed (Cycle G — cross-command parity cascade fix)
 - **HIGH: `lint` and `diff` now refuse UTF-16 / UTF-32 BOM input.** Cycle E fixed the same class of bug in `fmt` (yaml.v3 silently ASCII-strips non-UTF-8 input), but the identical decoder backs `lint` and `diff`. Both commands were happily running rules against the ASCII subset of a UTF-16 file and reporting confident garbage. All three subcommands now route file reads through `internal/fileio.ReadCapped` so future input guards land in one place.

@@ -10,6 +10,7 @@ package fmt
 import (
 	"bytes"
 	"errors"
+	"io"
 	"sort"
 	"strings"
 
@@ -42,6 +43,14 @@ var ErrEncoding = errors.New("format: non-UTF-8 input detected (yaml.v3 only dec
 // on -w).
 var ErrNotMapping = errors.New("format: root must be a mapping")
 
+// ErrMultiDoc is returned when src contains more than one YAML document
+// (separated by `---`). yaml.Unmarshal silently decodes only the first one,
+// which for `fmt -w` meant the user's multi-doc file got TRUNCATED on disk to
+// doc #1 — classic silent data loss in the same spirit as the Cycle E UTF-16
+// bug. parse.ParseBytes rejects the same shape with its own ErrMultiDoc, so
+// all three subcommands now refuse identically.
+var ErrMultiDoc = errors.New("format: multi-document YAML not supported (Dify DSL is single-document)")
+
 // Format parses src YAML and returns canonically ordered YAML bytes. Unknown
 // keys keep their original relative order after the ranked keys.
 func Format(src []byte) ([]byte, error) {
@@ -57,6 +66,12 @@ func Format(src []byte) ([]byte, error) {
 	}
 	if len(bytes.TrimSpace(src)) == 0 {
 		return nil, ErrEmpty
+	}
+	// Reject multi-document input BEFORE Unmarshal. yaml.Unmarshal happily
+	// returns only the first doc, so without this guard `fmt -w` would
+	// silently truncate a multi-doc file to doc #1 on disk. See ErrMultiDoc.
+	if isMultiDoc(src) {
+		return nil, ErrMultiDoc
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(src, &root); err != nil {
@@ -279,6 +294,57 @@ func sortNodesSeq(root *yaml.Node) {
 		out = append(out, it.node)
 	}
 	nodes.Content = out
+}
+
+// isMultiDoc reports whether src contains more than one YAML document with
+// actual content. Implemented locally rather than delegating to
+// internal/parse to avoid an fmt→parse dep (parse already depends on fmt's
+// sibling fileio; keeping fmt parse-free makes the dep graph a DAG). The
+// detection is a small yaml.NewDecoder probe — cost of duplication is
+// trivial. See parse.IsMultiDoc for the sibling implementation with the same
+// semantics, including the trailing-`---`-carve-out.
+func isMultiDoc(src []byte) bool {
+	dec := yaml.NewDecoder(bytes.NewReader(src))
+	var first yaml.Node
+	if err := dec.Decode(&first); err != nil {
+		// Empty or malformed; caller's Unmarshal will surface the error.
+		return false
+	}
+	for {
+		var next yaml.Node
+		err := dec.Decode(&next)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return false
+			}
+			// Unparseable second doc — still multi-doc.
+			return true
+		}
+		if docIsEmpty(&next) {
+			// Trailing `---\n` with no content — skip.
+			continue
+		}
+		return true
+	}
+}
+
+// docIsEmpty mirrors parse.docIsEmpty — duplicated here because fmt
+// intentionally does not import parse (keeps the dep graph a DAG). See the
+// comment on isMultiDoc for the rationale.
+func docIsEmpty(n *yaml.Node) bool {
+	if n == nil || n.Kind == 0 {
+		return true
+	}
+	if n.Kind == yaml.DocumentNode {
+		if len(n.Content) == 0 {
+			return true
+		}
+		c := n.Content[0]
+		if c.Kind == yaml.ScalarNode && c.Tag == "!!null" && c.Value == "" {
+			return true
+		}
+	}
+	return false
 }
 
 func edgeKeyFromMap(m *yaml.Node) string {

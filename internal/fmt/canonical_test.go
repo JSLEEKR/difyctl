@@ -202,6 +202,43 @@ func TestFormat_NonMappingRootRejected(t *testing.T) {
 	}
 }
 
+// TestFormat_MultiDocRejected is the Cycle H regression: yaml.Unmarshal silently
+// returns only the first document on a multi-doc stream. Before the fix, `fmt`
+// happily re-emitted the (canonicalised) doc #1 and `fmt -w` would clobber the
+// user's multi-doc file with just doc #1 on disk — silent truncation, same
+// class of data-loss bug as Cycle E's UTF-16 ASCII-stripping. We now refuse.
+func TestFormat_MultiDocRejected(t *testing.T) {
+	cases := map[string]string{
+		"two-docs":           "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n",
+		"leading-doc-marker": "---\napp: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := Format([]byte(src))
+			if err == nil {
+				t.Fatalf("want ErrMultiDoc, got bytes: %q — fmt -w would truncate this file", out)
+			}
+			if err != ErrMultiDoc && !strings.Contains(err.Error(), "multi-document") {
+				t.Fatalf("want ErrMultiDoc, got %v", err)
+			}
+		})
+	}
+}
+
+// TestFormat_TrailingDocMarkerStillAcceptedAsSingleDoc ensures we did not
+// over-trigger: a stream with a single doc followed by a `---` separator is
+// still a single document.
+func TestFormat_TrailingDocMarkerStillAcceptedAsSingleDoc(t *testing.T) {
+	src := "app: {name: X, mode: workflow, description: \"\"}\n" +
+		"kind: app\n" +
+		"version: \"0.1\"\n" +
+		"workflow: {graph: {nodes: [], edges: []}}\n" +
+		"---\n"
+	if _, err := Format([]byte(src)); err != nil {
+		t.Fatalf("trailing --- should be accepted as single-doc, got %v", err)
+	}
+}
+
 func TestFormat_AppBlockKeyOrder(t *testing.T) {
 	out, err := Format([]byte(scrambled))
 	if err != nil {

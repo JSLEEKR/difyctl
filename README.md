@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-v1.0.0-brightgreen?style=for-the-badge)](./CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-192_passing-success?style=for-the-badge)](#testing)
+[![Tests](https://img.shields.io/badge/tests-215_passing-success?style=for-the-badge)](#testing)
 [![Rules](https://img.shields.io/badge/lint_rules-20-blue?style=for-the-badge)](#rule-catalog)
 [![Build](https://img.shields.io/badge/build-go_build_clean-success?style=for-the-badge)](#building)
 
@@ -405,6 +405,7 @@ High-level notes:
 | Reject comment-only document                   |  ✓   |  ✓   |  ✓  |
 | Reject null scalar root (`~`, `null`)          |  ✓   |  ✓   |  ✓  |
 | Reject non-mapping root (`42`, `true`, `- a`)  |  ✓   |  ✓   |  ✓  |
+| Reject multi-document YAML (`---` separator)   |  ✓   |  ✓   |  ✓  |
 | Follow symlinks (read)                         |  ✓   |  ✓   |  ✓  |
 | `fmt -w` preserves symlink shape + target mode |  —   |  —   |  ✓  |
 | `--format json` error envelope                 |  ✓   |  ✓   |  —  |
@@ -457,7 +458,7 @@ ok   github.com/JSLEEKR/difyctl/internal/parse      0.004s
 ok   github.com/JSLEEKR/difyctl/internal/varref     0.002s
 ```
 
-- **192 tests** across 8 packages.
+- **215 tests** across 8 packages.
 - Rule tests are table-driven — one test file per rule, each exercising the happy path and at least one failure case.
 - `internal/fmt` has an idempotence test (`fmt(fmt(x)) == fmt(x)`) that will catch ANY accidental key re-ordering drift.
 - `internal/parse` has a "no-panic on garbage bytes" test covering binary noise and malformed YAML.
