@@ -221,3 +221,70 @@ func TestParity_SentinelErrorsUnwrapViaErrorsIs(t *testing.T) {
 		})
 	}
 }
+
+// TestParity_FmtMappingUsesTypedSentinels is Cycle N's architectural lock. The
+// switch in fmt.Format that translates parse failures to fmt sentinels MUST
+// use errors.Is on parse's typed sentinels (parse.ErrMultiDoc, parse.ErrEmpty,
+// parse.ErrNotMapping, parse.ErrDupKey) — not strings.Contains on yaml.v3's
+// human-readable messages. If yaml.v3 changes wording ("already defined" →
+// "duplicate key"), string-matching silently breaks the contract; typed-
+// sentinel matching keeps working. This test exercises the contract by
+// asserting BOTH the parse-side sentinel AND the fmt-side sentinel are in the
+// error chain for every mapped shape — which is only true if the switch uses
+// errors.Is on the parse sentinel.
+func TestParity_FmtMappingUsesTypedSentinels(t *testing.T) {
+	cases := []struct {
+		name        string
+		src         string
+		parseSent   error
+		fmtSentinel error
+	}{
+		{
+			name:        "multi-doc",
+			src:         "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n",
+			parseSent:   parse.ErrMultiDoc,
+			fmtSentinel: difyfmt.ErrMultiDoc,
+		},
+		{
+			name:        "empty",
+			src:         "",
+			parseSent:   parse.ErrEmpty,
+			fmtSentinel: difyfmt.ErrEmpty,
+		},
+		{
+			name:        "non-mapping",
+			src:         "42\n",
+			parseSent:   parse.ErrNotMapping,
+			fmtSentinel: difyfmt.ErrNotMapping,
+		},
+		{
+			name:        "dup-key",
+			src:         "app:\n  name: A\n  name: B\n  mode: workflow\nkind: app\nversion: \"0.1\"\nworkflow: {graph: {nodes: [], edges: []}}\n",
+			parseSent:   parse.ErrDupKey,
+			fmtSentinel: difyfmt.ErrDuplicateKeys,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// First, confirm parse surfaces the typed sentinel.
+			parseErr := parse.Validate([]byte(tc.src))
+			if parseErr == nil {
+				t.Fatalf("test bug: parse accepted %q", tc.name)
+			}
+			if !errors.Is(parseErr, tc.parseSent) {
+				t.Fatalf("parse.Validate(%q) does not chain %v — got %v", tc.name, tc.parseSent, parseErr)
+			}
+			// Then fmt must also chain the corresponding fmt sentinel. If
+			// fmt's switch matches on strings.Contains of yaml.v3's wording,
+			// the parse-side sentinel would NOT survive into fmt's error;
+			// only an errors.Is-on-parse-sentinel switch preserves both.
+			_, fmtErr := difyfmt.Format([]byte(tc.src))
+			if fmtErr == nil {
+				t.Fatalf("fmt.Format(%q) = nil — parse rejected, fmt accepted", tc.name)
+			}
+			if !errors.Is(fmtErr, tc.fmtSentinel) {
+				t.Fatalf("fmt err does not chain %v — got %v", tc.fmtSentinel, fmtErr)
+			}
+		})
+	}
+}

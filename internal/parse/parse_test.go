@@ -185,6 +185,65 @@ func TestIsMultiDoc_SingleDocs(t *testing.T) {
 	}
 }
 
+// TestParseBytes_SentinelErrorsChained is Cycle N's architectural regression:
+// every documented shape-sentinel in this package must be in the error chain
+// for the input that triggers it, so callers using errors.Is on the sentinel
+// keep working regardless of yaml.v3's wording changes. Cycle M fixed this
+// for ErrMultiDoc; Cycle N extends it to ErrEmpty, ErrNotMapping, and
+// ErrDupKey. If this test regresses, fmt/canonical.go's errors.Is switch arms
+// will silently fall through to the default branch — the same latent bug
+// shape Cycle M discovered for multi-doc.
+func TestParseBytes_SentinelErrorsChained(t *testing.T) {
+	cases := []struct {
+		name     string
+		src      string
+		sentinel error
+	}{
+		{"empty", "", ErrEmpty},
+		{"multi-doc", "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n", ErrMultiDoc},
+		{"non-mapping-scalar", "42\n", ErrNotMapping},
+		{"non-mapping-sequence", "- a\n- b\n", ErrNotMapping},
+		{"non-mapping-null", "~\n", ErrNotMapping},
+		{"non-mapping-whitespace", "   \n\n", ErrNotMapping},
+		{"non-mapping-comment", "# hello\n", ErrNotMapping},
+		{"dup-key", "a: 1\na: 2\n", ErrDupKey},
+		{"dup-key-nested", "app:\n  name: A\n  name: B\n  mode: workflow\nkind: app\nversion: \"0.1\"\nworkflow: {graph: {nodes: [], edges: []}}\n", ErrDupKey},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseBytes([]byte(tc.src))
+			if err == nil {
+				t.Fatalf("want error for %q, got nil", tc.name)
+			}
+			if !errors.Is(err, ErrParse) {
+				t.Fatalf("errors.Is(err, ErrParse) = false for %q — the top-level parse sentinel must always be in the chain. Got err=%v", tc.name, err)
+			}
+			if !errors.Is(err, tc.sentinel) {
+				t.Fatalf("errors.Is(err, %v) = false for %q — callers using errors.Is on the shape sentinel are broken. Got err=%v", tc.sentinel, tc.name, err)
+			}
+		})
+	}
+}
+
+// TestParseBytes_DupKeyPreservesLineNumber locks that the yaml.v3 line-number
+// context ("already defined at line N") survives the typed-sentinel wrap. The
+// line number is the only way users can find the offending key in a large file,
+// so losing it would be a regression equivalent to the Cycle K bug where fmt
+// swallowed lint's wording.
+func TestParseBytes_DupKeyPreservesLineNumber(t *testing.T) {
+	src := "a: 1\na: 2\n"
+	_, err := ParseBytes([]byte(src))
+	if err == nil {
+		t.Fatal("want dup-key error, got nil")
+	}
+	if !errors.Is(err, ErrDupKey) {
+		t.Fatalf("want ErrDupKey in chain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "already defined at line") {
+		t.Fatalf("error lost line-number context from yaml.v3: %v", err)
+	}
+}
+
 // TestLoadFile_TooLarge verifies that the MaxFileSize cap is enforced.
 func TestLoadFile_TooLarge(t *testing.T) {
 	dir := t.TempDir()

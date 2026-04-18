@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -551,6 +552,100 @@ workflow:
 			// (so users can find the offending line just like lint reports it).
 			if !strings.Contains(err.Error(), "already defined at line") {
 				t.Fatalf("error message lost the line-number context from yaml.v3: %v", err)
+			}
+		})
+	}
+}
+
+// TestFormat_ConcurrentSafe exercises Format from many goroutines simultaneously
+// on the same source bytes. go test -race will flag any shared mutable state
+// in the formatter. The stable byte-for-byte output across all workers also
+// asserts Format is deterministic under concurrency — no hidden map iteration
+// order leaking through.
+func TestFormat_ConcurrentSafe(t *testing.T) {
+	const workers = 100
+	want, err := Format([]byte(scrambled))
+	if err != nil {
+		t.Fatalf("baseline Format failed: %v", err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got, err := Format([]byte(scrambled))
+			if err != nil {
+				errs <- err
+				return
+			}
+			if !bytes.Equal(got, want) {
+				errs <- errors.New("concurrent Format produced divergent bytes — non-deterministic under load")
+				return
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for e := range errs {
+		t.Fatal(e)
+	}
+}
+
+// TestFormat_PrecedenceOrder documents the precedence of fmt's input-rejection
+// gates for inputs that violate MULTIPLE rules at once. Explicit ordering
+// prevents users from being surprised by "lint says A, fmt says B" for the
+// same file. Current order (from Format's control flow):
+//
+//  1. Non-UTF-8 BOM (fileio.HasNonUTF8BOM) — byte-level, always first
+//  2. parse.Validate — strict decode, returns first shape it hits
+//  3. Anchor/alias check — node-tree-level
+//  4. Round-trip self-check — emit-side
+//
+// Within parse.Validate, the order is:
+//   - empty → multi-doc → yaml.Unmarshal error → non-mapping → decode (dup-key)
+//
+// This test pins the observed precedence so a future refactor that reorders
+// the gates produces a loud test failure rather than a silent behaviour shift.
+func TestFormat_PrecedenceOrder(t *testing.T) {
+	cases := []struct {
+		name     string
+		src      []byte
+		sentinel error
+		reason   string
+	}{
+		{
+			name:     "bom-beats-everything",
+			src:      append([]byte{0xFF, 0xFE}, []byte("app: {name: A}\n---\napp: {name: B}\n")...),
+			sentinel: ErrEncoding,
+			reason:   "UTF-16 BOM + multi-doc — BOM check runs first (byte-level)",
+		},
+		{
+			name:     "multidoc-beats-non-mapping",
+			src:      []byte("42\n---\n99\n"),
+			sentinel: ErrMultiDoc,
+			reason:   "two non-mapping docs — multi-doc detection runs before non-mapping check",
+		},
+		{
+			name: "dup-key-beats-anchor",
+			src: []byte(`app: &a {name: A, mode: workflow}
+app: *a
+kind: app
+version: "0.1"
+workflow: {graph: {nodes: [], edges: []}}
+`),
+			sentinel: ErrDuplicateKeys,
+			reason:   "dup-key + anchor — parse.Validate runs before anchor check; dup-key wins",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Format(tc.src)
+			if err == nil {
+				t.Fatalf("want error for %q (%s), got nil", tc.name, tc.reason)
+			}
+			if !errors.Is(err, tc.sentinel) {
+				t.Fatalf("%s: want errors.Is(err, %v), got %v", tc.reason, tc.sentinel, err)
 			}
 		})
 	}

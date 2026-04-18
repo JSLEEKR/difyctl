@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/JSLEEKR/difyctl/internal/fileio"
 	"github.com/JSLEEKR/difyctl/internal/parse"
@@ -131,20 +130,21 @@ func Format(src []byte) ([]byte, error) {
 	// with no fmt change required. Map well-known parse failures back to the
 	// existing fmt sentinels so callers using errors.Is keep working.
 	if vErr := parse.Validate(src); vErr != nil {
-		// Map well-known parse failures back to fmt sentinels. Prefer
-		// errors.Is (typed-error discrimination) where parse exposes a
-		// sentinel; fall back to substring match on yaml.v3's messages for
-		// the other shapes, where parse does not yet have a typed error.
-		// If/when parse grows typed errors for "empty", "not-mapping", and
-		// "duplicate", those branches should migrate to errors.Is too.
+		// Map well-known parse failures back to fmt sentinels via errors.Is
+		// on parse's typed sentinels. Parse owns the detection: if yaml.v3
+		// changes the wording of e.g. "already defined at line", only parse
+		// needs a one-line fix — fmt keeps working because the typed chain
+		// is stable. Prior to Cycle N the empty / non-mapping / dup-key
+		// branches string-matched on yaml.v3's wording, which was the same
+		// class of latent bug Cycle M fixed for multi-doc.
 		switch {
 		case errors.Is(vErr, parse.ErrMultiDoc):
 			return nil, ErrMultiDoc
-		case strings.Contains(vErr.Error(), "already defined at line"):
+		case errors.Is(vErr, parse.ErrDupKey):
 			return nil, fmt.Errorf("%w: %v", ErrDuplicateKeys, vErr)
-		case strings.Contains(vErr.Error(), "empty document"):
+		case errors.Is(vErr, parse.ErrEmpty):
 			return nil, ErrEmpty
-		case strings.Contains(vErr.Error(), "root must be a mapping"):
+		case errors.Is(vErr, parse.ErrNotMapping):
 			return nil, ErrNotMapping
 		default:
 			// Generic parse error (malformed YAML, decode shape mismatch,

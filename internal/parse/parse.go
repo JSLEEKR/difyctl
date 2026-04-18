@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/JSLEEKR/difyctl/internal/fileio"
 	"github.com/JSLEEKR/difyctl/internal/model"
@@ -22,7 +23,10 @@ import (
 // ErrIO signals a filesystem-level failure.
 var ErrIO = errors.New("io error")
 
-// ErrParse signals malformed or unreadable YAML.
+// ErrParse signals malformed or unreadable YAML. All other parse-layer
+// sentinels below chain through ErrParse via multi-%w, so callers can ask
+// "is this any parse failure?" with errors.Is(err, ErrParse) regardless of
+// which specific shape tripped.
 var ErrParse = errors.New("parse error")
 
 // ErrMultiDoc is returned when input contains more than one YAML document
@@ -32,6 +36,31 @@ var ErrParse = errors.New("parse error")
 // lint/diff (they rule against doc #1 only, silently ignoring doc #2..N).
 // Dify workflow DSL files are single-document by convention; reject the rest.
 var ErrMultiDoc = errors.New("multi-document YAML not supported (Dify DSL is single-document)")
+
+// ErrEmpty is returned when input is zero-length. Whitespace-only /
+// comment-only / null-scalar inputs are reported as ErrNotMapping because
+// yaml.v3 decodes them to a non-mapping root and the practical failure mode
+// is identical ("there's no top-level DSL here"); users see the same error
+// from both paths. Separate sentinels would encourage callers to do the same
+// mapping twice, so we consolidate.
+var ErrEmpty = errors.New("empty document")
+
+// ErrNotMapping is returned when the document's root is not a mapping: top-
+// level scalars (`42`, `true`, `foo`), top-level sequences (`- a\n- b`), and
+// everything yaml.v3 decodes to a ScalarNode (including whitespace-only and
+// comment-only files, which decode to !!null). Dify DSL is always a mapping
+// at the root; reject the rest.
+var ErrNotMapping = errors.New("root must be a mapping")
+
+// ErrDupKey is returned when a mapping contains the same key more than once.
+// yaml.v3's strict typed-struct decode rejects duplicate keys with a message
+// containing "already defined at line N"; we wrap that message so callers can
+// discriminate via errors.Is without string-matching on yaml.v3's wording.
+// Fragility note: the detection itself still depends on yaml.v3's message
+// format — if yaml.v3 changes the wording, parse needs a one-line fix here
+// but fmt and any downstream callers continue to work unchanged. That is the
+// point of owning the detection inside parse.
+var ErrDupKey = errors.New("duplicate mapping key")
 
 // MaxFileSize re-exports fileio.MaxFileSize so existing callers and tests keep
 // working. The authoritative value lives in internal/fileio.
@@ -55,7 +84,13 @@ func LoadFile(path string) (*model.Workflow, error) {
 
 // Validate runs the same syntactic and shape checks as ParseBytes but discards
 // the decoded result. Use this when you only need a "is this valid Dify DSL?"
-// answer without paying for the line-number annotation pass.
+// answer without caring about the returned *model.Workflow.
+//
+// Currently implemented as a thin wrapper around ParseBytes (which does the
+// full decode + line annotation). Line annotation is O(nodes + edges) and
+// cheap for realistic ~50 KB DSLs; skipping it is not worth the parse/validate
+// code duplication. If future profiling shows this matters, inline a
+// decode-only path here.
 //
 // Why it exists: prior cycles E, G, H, I, K all patched the same class of bug —
 // fmt's input acceptance diverged from parse's strict-decode rules, so a user
@@ -69,10 +104,17 @@ func Validate(b []byte) error {
 	return err
 }
 
-// ParseBytes parses a YAML byte slice into a Workflow.
+// ParseBytes parses a YAML byte slice into a Workflow. All returned errors
+// chain ErrParse plus at most one of the shape sentinels (ErrEmpty,
+// ErrMultiDoc, ErrNotMapping, ErrDupKey) via Go 1.20+ multi-%w so callers can
+// discriminate with errors.Is. See the sentinel vars for each shape.
 func ParseBytes(b []byte) (*model.Workflow, error) {
 	if len(b) == 0 {
-		return nil, fmt.Errorf("%w: empty document", ErrParse)
+		// Chain ErrParse + ErrEmpty so callers can discriminate via errors.Is
+		// on either sentinel. The trailing "empty document" is the human-
+		// readable wording preserved for backwards compatibility with tests
+		// and CLI output that matched on the phrase.
+		return nil, fmt.Errorf("%w: %w", ErrParse, ErrEmpty)
 	}
 	if IsMultiDoc(b) {
 		// Chain BOTH sentinels so callers can discriminate via errors.Is:
@@ -97,11 +139,24 @@ func ParseBytes(b []byte) (*model.Workflow, error) {
 		doc = doc.Content[0]
 	}
 	if doc.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%w: root must be a mapping", ErrParse)
+		// Chain ErrParse + ErrNotMapping so fmt can map to its sentinel via
+		// errors.Is instead of string-matching the "root must be a mapping"
+		// phrase — the same Cycle M-class latent-bug shape that the multi-doc
+		// branch had until Cycle M.
+		return nil, fmt.Errorf("%w: %w", ErrParse, ErrNotMapping)
 	}
 
 	wf := &model.Workflow{}
 	if err := doc.Decode(wf); err != nil {
+		// yaml.v3's strict typed-struct decode rejects duplicate mapping keys
+		// with a message containing "already defined at line N". We detect
+		// that shape here (still string-matching yaml.v3's wording, but
+		// ONCE in one place) and chain ErrDupKey so downstream callers
+		// discriminate via errors.Is without re-matching the string. If
+		// yaml.v3 changes the wording, this is the one line to update.
+		if strings.Contains(err.Error(), "already defined at line") {
+			return nil, fmt.Errorf("%w: %w: %v", ErrParse, ErrDupKey, err)
+		}
 		return nil, fmt.Errorf("%w: decode: %v", ErrParse, err)
 	}
 	wf.RawRoot = doc
