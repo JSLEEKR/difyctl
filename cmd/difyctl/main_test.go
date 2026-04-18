@@ -762,6 +762,84 @@ func TestCrossCommand_MultiDocRejected(t *testing.T) {
 	}
 }
 
+// TestCrossCommand_AnchorsHandled is the Cycle I parity assertion. A YAML
+// anchor/alias pair — common in hand-crafted DSLs using `<<: *base` merges —
+// is safe for lint and diff (they only read, never re-emit) but unsafe for
+// fmt: canonical reordering can move the anchor-defining element AFTER its
+// alias in the output, producing invalid YAML. `fmt -w` would have silently
+// written the broken bytes to disk; now it refuses. Lint and diff are still
+// expected to accept the input, since the user gets no useful feedback from
+// refusing a read-only operation.
+func TestCrossCommand_AnchorsHandled(t *testing.T) {
+	const anchored = `app: {name: X, mode: workflow}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: s
+        type: start
+        data: &a {title: S, x: 1}
+      - id: e
+        type: end
+        data: *a
+    edges:
+      - {id: e-1, source: s, target: e}
+`
+	dir := t.TempDir()
+	p := filepath.Join(dir, "a.yml")
+	if err := os.WriteFile(p, []byte(anchored), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	origBytes, _ := os.ReadFile(p)
+
+	// lint: should accept (DIFY warnings fine, but no IO/parse error).
+	t.Run("lint-accepts", func(t *testing.T) {
+		var so, se bytes.Buffer
+		code, err := runLint([]string{p}, &so, &se)
+		if err != nil {
+			t.Fatalf("lint should accept anchors, got err: %v", err)
+		}
+		if code == 3 {
+			t.Fatalf("lint should NOT return 3 for anchored input, got %d", code)
+		}
+	})
+
+	// diff: should accept.
+	t.Run("diff-accepts", func(t *testing.T) {
+		var so, se bytes.Buffer
+		code, err := runDiff([]string{p, p}, &so, &se)
+		if err != nil || code != 0 {
+			t.Fatalf("diff should accept anchors, got (%d, %v)", code, err)
+		}
+	})
+
+	// fmt: MUST refuse to avoid silent file corruption.
+	t.Run("fmt-refuses", func(t *testing.T) {
+		var so, se bytes.Buffer
+		code, err := runFmt([]string{p}, &so, &se)
+		if code != 3 || err == nil {
+			t.Fatalf("fmt should refuse anchored input, got (%d, %v)", code, err)
+		}
+		if !strings.Contains(err.Error(), "anchor") {
+			t.Fatalf("fmt error should mention anchors, got: %v", err)
+		}
+	})
+
+	// fmt -w: MUST refuse AND leave file untouched on disk.
+	t.Run("fmt-w-refuses-and-preserves", func(t *testing.T) {
+		var so, se bytes.Buffer
+		code, err := runFmt([]string{"-w", p}, &so, &se)
+		if code != 3 || err == nil {
+			t.Fatalf("fmt -w should refuse anchored input, got (%d, %v)", code, err)
+		}
+		now, _ := os.ReadFile(p)
+		if !bytes.Equal(origBytes, now) {
+			t.Fatalf("fmt -w mutated an anchored file on disk — data loss!\nbefore:\n%s\nafter:\n%s", origBytes, now)
+		}
+	})
+}
+
 // TestCrossCommand_BareScalarRejected is Cycle G's answer to the Cycle F
 // open question (b): `fmt` used to happily serialise `42\n` for input `42`
 // while lint/diff rejected the same input with "root must be a mapping".

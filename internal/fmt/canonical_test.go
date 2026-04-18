@@ -202,6 +202,84 @@ func TestFormat_NonMappingRootRejected(t *testing.T) {
 	}
 }
 
+// TestFormat_AnchorsRejected is the Cycle I regression. A Dify DSL that uses
+// YAML anchors (&name) paired with aliases (*name) is rare but legal, and
+// Format's canonical reordering can move the anchor-defining element AFTER
+// its alias in the emitted stream. The result is invalid YAML: yaml.v3's
+// re-parser fails with `unknown anchor 'name' referenced`. Critically,
+// `fmt -w` on such a file used to SUCCEED — writing the invalid bytes to
+// disk — because Format returned (bytes, nil) and the re-parse never ran.
+// Lint on the written file would then fail with exit 3, leaving the user
+// with a corrupted source file. Same class of silent-data-loss bug as
+// Cycles E (UTF-16) and H (multi-doc truncation). We now refuse up-front.
+func TestFormat_AnchorsRejected(t *testing.T) {
+	cases := map[string]string{
+		// Anchor-in-data triggers the sort-by-id hazard: after Format sorts
+		// nodes by id, "e" (alias user) appears before "s" (anchor owner).
+		"anchor-in-node-data": `app: {name: X, mode: workflow}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: s
+        type: start
+        data: &a
+          x: 1
+      - id: e
+        type: end
+        data: *a
+    edges: []
+`,
+		// Top-level anchor triggers the unknown-keys-after-ranked hazard: the
+		// anchor definition gets moved past workflow:, appearing after its use.
+		"anchor-at-top-level": `anchors: &a
+  x: 1
+app:
+  name: X
+  mode: workflow
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: s
+        type: start
+        data: *a
+    edges: []
+`,
+		// YAML merge keys (<<: *base) are the most common anchor pattern in
+		// hand-written YAML and hit the same hazard.
+		"yaml-merge-key": `base: &b
+  title: Base
+app:
+  name: X
+  mode: workflow
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - <<: *b
+        id: s
+        type: start
+        data: {title: S}
+    edges: []
+`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := Format([]byte(src))
+			if err == nil {
+				t.Fatalf("want ErrAnchors, got bytes: %q — fmt -w would risk corrupting the file", out)
+			}
+			if err != ErrAnchors {
+				t.Fatalf("want ErrAnchors, got %v", err)
+			}
+		})
+	}
+}
+
 // TestFormat_MultiDocRejected is the Cycle H regression: yaml.Unmarshal silently
 // returns only the first document on a multi-doc stream. Before the fix, `fmt`
 // happily re-emitted the (canonicalised) doc #1 and `fmt -w` would clobber the

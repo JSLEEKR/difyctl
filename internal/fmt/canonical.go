@@ -51,6 +51,18 @@ var ErrNotMapping = errors.New("format: root must be a mapping")
 // all three subcommands now refuse identically.
 var ErrMultiDoc = errors.New("format: multi-document YAML not supported (Dify DSL is single-document)")
 
+// ErrAnchors is returned when the input uses YAML anchors (`&name`) paired
+// with aliases (`*name`). Canonical formatting reorders top-level keys and
+// sorts nodes/edges by id; if the anchor-defining element ends up AFTER the
+// alias-using element in the emitted stream, the output is invalid YAML
+// (`unknown anchor 'name' referenced`). `fmt -w` in that case would silently
+// corrupt the user's file — same class of data-loss bug as Cycles E (UTF-16
+// ASCII-stripping) and H (multi-doc truncation). Dify's DSL exporter does NOT
+// emit anchors/aliases, so the practical cost of refusal is ~zero. Users
+// hand-editing a DSL with anchors get a clear error instead of a corrupted
+// file.
+var ErrAnchors = errors.New("format: YAML anchors/aliases (&name / *name) are not supported — canonical reordering would break them")
+
 // Format parses src YAML and returns canonically ordered YAML bytes. Unknown
 // keys keep their original relative order after the ranked keys.
 func Format(src []byte) ([]byte, error) {
@@ -76,6 +88,14 @@ func Format(src []byte) ([]byte, error) {
 	var root yaml.Node
 	if err := yaml.Unmarshal(src, &root); err != nil {
 		return nil, err
+	}
+	// Reject anchors/aliases. Canonical reordering can move an anchor AFTER
+	// the alias that references it, producing invalid YAML on re-emit. Rather
+	// than silently corrupting the user's file on `fmt -w`, we refuse. Dify
+	// DSL exports do not use anchors; hand-crafted files must be de-anchored
+	// before formatting. See ErrAnchors.
+	if hasAnchors(&root) {
+		return nil, ErrAnchors
 	}
 	// Reject cases where the document has no content — e.g. a file that is
 	// only YAML comments like `# nothing here`. yaml.v3 parses these to a
@@ -326,6 +346,28 @@ func isMultiDoc(src []byte) bool {
 		}
 		return true
 	}
+}
+
+// hasAnchors reports whether the node tree contains any YAML anchor (&name)
+// or alias (*name). Canonical reordering — top-level keys, node id sort,
+// edge id sort — can move an anchor AFTER its alias in the emitted stream,
+// producing output that yaml fails to re-parse (`unknown anchor 'x'
+// referenced`). `fmt -w` in that scenario silently corrupts the user's file;
+// we refuse up-front instead. Also covers yaml merge keys (`<<: *base`)
+// which are the most common anchor pattern in hand-written YAML.
+func hasAnchors(n *yaml.Node) bool {
+	if n == nil {
+		return false
+	}
+	if n.Anchor != "" || n.Kind == yaml.AliasNode {
+		return true
+	}
+	for _, c := range n.Content {
+		if hasAnchors(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // docIsEmpty mirrors parse.docIsEmpty — duplicated here because fmt

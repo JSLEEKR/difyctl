@@ -2,7 +2,10 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] — 2026-04-19 (Cycle C / D / E / F / G / H hardening)
+## [1.0.1] — 2026-04-19 (Cycle C / D / E / F / G / H / I hardening)
+
+### Fixed (Cycle I — anchor/alias data-loss fix)
+- **HIGH: `fmt -w` on a YAML file using anchors (`&name`) paired with aliases (`*name`) no longer silently corrupts the file.** Canonical reordering — top-level key sort, node-id sort, edge-id sort — could move an anchor AFTER its alias in the emitted stream, producing output that yaml.v3 fails to re-parse (`unknown anchor 'name' referenced`). Before the fix, `Format` returned the invalid bytes with `err == nil`, `fmt -w` wrote them to disk, and a follow-up `lint` on the rewritten file exited 3 — leaving the user with a corrupted source file. Same class of silent-data-loss bug as Cycles E (UTF-16 ASCII-stripping) and H (multi-doc truncation). We now detect any anchor/alias in the parsed node tree and refuse with `format: YAML anchors/aliases … not supported`. `lint` and `diff` are unchanged — they only read, never re-emit, so there is no corruption risk. Dify's DSL exporter does not emit anchors; hand-crafted files using `<<: *base` merges must be de-anchored before `fmt -w`.
 
 ### Fixed (Cycle H — multi-document YAML data-loss fix)
 - **HIGH: `fmt -w` on a multi-document YAML file no longer silently truncates the file.** yaml.v3's `Unmarshal` consumes only the first document of a `---`-separated stream and drops the rest; before the fix, `difyctl fmt -w multi.yml` would quietly rewrite the user's file to just doc #1 on disk — the exact class of silent-data-loss bug Cycle E fixed for UTF-16 inputs. Multi-doc streams now cause lint / diff / fmt to exit 3 with `multi-document YAML not supported (Dify DSL is single-document)`, and the file on disk is untouched.
