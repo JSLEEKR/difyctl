@@ -105,6 +105,39 @@ func TestRunLint_JSONFormat(t *testing.T) {
 	}
 }
 
+// TestRunLint_JSONSuccessEnvelopeHasErrorNull is the Cycle D regression that
+// makes lint's JSON envelope match diff's: jq filters like `.error` should
+// work uniformly on success (null) and failure (string) paths. Previously the
+// success path omitted the key, breaking naive pipelines that check .error.
+// Also locks that findings is always an array (never null), so
+// `.findings[]` never explodes with "Cannot iterate over null".
+func TestRunLint_JSONSuccessEnvelopeHasErrorNull(t *testing.T) {
+	path := writeTemp(t, "w.yml", good)
+	var stdout, stderr bytes.Buffer
+	code, err := runLint([]string{"--format", "json", path}, &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("want (0,nil), got (%d,%v): %s", code, err, stdout.String())
+	}
+	var env map[string]any
+	if jerr := json.Unmarshal(stdout.Bytes(), &env); jerr != nil {
+		t.Fatalf("stdout not JSON: %v\n%s", jerr, stdout.String())
+	}
+	raw, ok := env["error"]
+	if !ok {
+		t.Fatalf("expected 'error' key in success envelope, got %v", env)
+	}
+	if raw != nil {
+		t.Fatalf("expected error=null on success, got %v", raw)
+	}
+	rawF, ok := env["findings"]
+	if !ok {
+		t.Fatalf("expected 'findings' key, got %v", env)
+	}
+	if _, isSlice := rawF.([]any); !isSlice {
+		t.Fatalf("findings must serialise as [] not null, got %T=%v", rawF, rawF)
+	}
+}
+
 func TestRunLint_BadFormat(t *testing.T) {
 	path := writeTemp(t, "w.yml", good)
 	var stdout, stderr bytes.Buffer
@@ -247,15 +280,6 @@ func TestRunFmt_MissingFile(t *testing.T) {
 	code, err := runFmt([]string{"/nonexistent/x.yml"}, &stdout, &stderr)
 	if code != 3 || err == nil {
 		t.Fatalf("want (3, err), got (%d, %v)", code, err)
-	}
-}
-
-func TestExitCodeFor(t *testing.T) {
-	if exitCodeFor(nil) != 0 {
-		t.Fatal("nil → 0")
-	}
-	if exitCodeFor(newExitErr(2, os.ErrInvalid)) != 2 {
-		t.Fatal("exitErr preserved")
 	}
 }
 

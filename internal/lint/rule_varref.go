@@ -27,12 +27,21 @@ func (ruleUnresolvedVarRef) Check(wf *model.Workflow) []Finding {
 	}
 
 	var out []Finding
+	// seen dedups findings per (referrer, target, var) — a single node can
+	// mention the same `{{#ghost.q#}}` many times (e.g. inside a giant prompt
+	// template) and we should flag the problem once, not once per occurrence.
+	seen := map[string]bool{}
 	for i := range wf.Workflow.Graph.Nodes {
 		n := &wf.Workflow.Graph.Nodes[i]
 		refs := varref.Collect(n.Data)
 		for _, ref := range refs {
+			key := n.ID + "|" + ref.NodeID + "|" + ref.VarName
+			if seen[key] {
+				continue
+			}
 			src, ok := idToNode[ref.NodeID]
 			if !ok {
+				seen[key] = true
 				out = append(out, Finding{
 					Rule:     "DIFY013",
 					Severity: SeverityError,
@@ -42,6 +51,7 @@ func (ruleUnresolvedVarRef) Check(wf *model.Workflow) []Finding {
 				continue
 			}
 			if !varref.NodeDeclaresOutput(src, ref.VarName) {
+				seen[key] = true
 				out = append(out, Finding{
 					Rule:     "DIFY013",
 					Severity: SeverityError,

@@ -1,6 +1,10 @@
 package lint
 
-import "github.com/JSLEEKR/difyctl/internal/model"
+import (
+	"fmt"
+
+	"github.com/JSLEEKR/difyctl/internal/model"
+)
 
 // DIFY005 — missing-node-id.
 type ruleMissingNodeID struct{}
@@ -35,11 +39,14 @@ func (ruleDuplicateNodeID) Check(wf *model.Workflow) []Finding {
 			continue
 		}
 		if firstLine, ok := seen[n.ID]; ok {
-			_ = firstLine
+			msg := "duplicate node id '" + n.ID + "'"
+			if firstLine > 0 {
+				msg += fmt.Sprintf(" (first defined at line %d)", firstLine)
+			}
 			out = append(out, Finding{
 				Rule:     "DIFY006",
 				Severity: SeverityError,
-				Message:  "duplicate node id '" + n.ID + "'",
+				Message:  msg,
 				Line:     n.Line,
 			})
 		} else {

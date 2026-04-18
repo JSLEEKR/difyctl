@@ -171,6 +171,37 @@ func TestCollectVarRefs_NestedStrings(t *testing.T) {
 	}
 }
 
+// TestVarRef_DedupesRepeatedRefs is the Cycle D regression for DIFY013 spam:
+// one node mentioning the same `{{#ghost.q#}}` N times used to emit N identical
+// findings. We now dedup per (referrer, target, var) so a giant prompt template
+// with 1000 copies of a typo produces exactly one finding, not 1000 lines of
+// noise.
+func TestVarRef_DedupesRepeatedRefs(t *testing.T) {
+	wf := loadFixture(t, `app: {name: A, mode: workflow}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - {id: s, type: start, data: {title: S, variables: [{variable: q}]}}
+      - id: l
+        type: llm
+        data:
+          title: G
+          model: {name: m, provider: o}
+          prompt_template:
+            - role: user
+              text: "{{#ghost.q#}} {{#ghost.q#}} {{#ghost.q#}} {{#ghost.q#}}"
+            - role: system
+              text: "also {{#ghost.q#}}"
+    edges: []
+`)
+	fs := ruleUnresolvedVarRef{}.Check(wf)
+	if len(fs) != 1 {
+		t.Fatalf("want exactly 1 dedup'd finding, got %d: %v", len(fs), fs)
+	}
+}
+
 func TestVarRefPattern_Boundary(t *testing.T) {
 	// Missing closing should not match.
 	if varref.Pattern.MatchString("{{#x.y}}") {

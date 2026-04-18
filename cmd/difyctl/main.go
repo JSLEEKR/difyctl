@@ -12,20 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-
-	"github.com/JSLEEKR/difyctl/internal/parse"
 )
-
-// exitErr signals the exit code for a CLI failure.
-type exitErr struct {
-	code int
-	err  error
-}
-
-func (e *exitErr) Error() string { return e.err.Error() }
-func (e *exitErr) Unwrap() error { return e.err }
-
-func newExitErr(code int, err error) *exitErr { return &exitErr{code: code, err: err} }
 
 // usage prints the global help text to stderr.
 func usage() {
@@ -77,22 +64,4 @@ func realMain(args []string) (int, error) {
 		usage()
 		return 2, fmt.Errorf("unknown subcommand: %s", sub)
 	}
-}
-
-// exitCodeFor maps a low-level error to our documented exit codes.
-func exitCodeFor(err error) int {
-	if err == nil {
-		return 0
-	}
-	var ee *exitErr
-	if errors.As(err, &ee) {
-		return ee.code
-	}
-	if errors.Is(err, parse.ErrIO) {
-		return 3
-	}
-	if errors.Is(err, parse.ErrParse) {
-		return 3
-	}
-	return 1
 }

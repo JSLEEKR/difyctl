@@ -49,13 +49,23 @@ func runLint(args []string, stdout, stderr io.Writer) (int, error) {
 
 	rules := lint.DefaultRules()
 	findings := lint.Run(rules, wf)
+	if findings == nil {
+		// Ensure JSON output serialises to `[]` rather than `null` — callers
+		// iterating with `jq '.findings[]'` otherwise fail with "Cannot iterate
+		// over null" on a clean lint.
+		findings = []lint.Finding{}
+	}
 
 	switch *format {
 	case "json":
+		// Envelope includes "error": null on success so that jq/yq filters like
+		// `.findings[]` behave identically on success AND on IO/parse-error
+		// paths (which emit the same shape with error set to a string).
 		buf, _ := json.MarshalIndent(map[string]any{
 			"path":     path,
 			"findings": findings,
 			"summary":  lint.CountBySeverity(findings),
+			"error":    nil,
 		}, "", "  ")
 		fmt.Fprintln(stdout, string(buf))
 	default:

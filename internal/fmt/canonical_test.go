@@ -134,6 +134,25 @@ func TestFormat_NullDocumentRejected(t *testing.T) {
 	}
 }
 
+// TestFormat_CommentOnlyRejected is the Cycle D regression: a file that is
+// only YAML comments (`# nothing here`) previously slipped past the Cycle C
+// guards because yaml.v3 parses it to a DocumentNode with zero content, the
+// ScalarNode check never fires, and the encoder then emitted the literal
+// string "null\n" — clobbering a user's comment-only file on `fmt -w`.
+func TestFormat_CommentOnlyRejected(t *testing.T) {
+	for _, src := range []string{
+		"# nothing\n",
+		"# one\n# two\n",
+		"\n# leading blank then comment\n",
+		"# trailing-no-newline",
+	} {
+		out, err := Format([]byte(src))
+		if err == nil {
+			t.Fatalf("want error for comment-only %q, got bytes: %q", src, out)
+		}
+	}
+}
+
 func TestFormat_AppBlockKeyOrder(t *testing.T) {
 	out, err := Format([]byte(scrambled))
 	if err != nil {

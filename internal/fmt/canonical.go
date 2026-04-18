@@ -33,6 +33,13 @@ func Format(src []byte) ([]byte, error) {
 	if err := yaml.Unmarshal(src, &root); err != nil {
 		return nil, err
 	}
+	// Reject cases where the document has no content — e.g. a file that is
+	// only YAML comments like `# nothing here`. yaml.v3 parses these to a
+	// DocumentNode with zero children and would otherwise marshal back as the
+	// literal string "null\n", clobbering the user's comment-only file.
+	if root.Kind == 0 || (root.Kind == yaml.DocumentNode && len(root.Content) == 0) {
+		return nil, ErrEmpty
+	}
 	// Reject cases where the document decoded to a null scalar (e.g. input
 	// like "~" or "null"): we have nothing meaningful to re-emit.
 	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
