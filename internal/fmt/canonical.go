@@ -78,6 +78,21 @@ var ErrAnchors = errors.New("format: YAML anchors/aliases (&name / *name) are no
 // property already covered by TestFormat_Idempotent.
 var ErrRoundTrip = errors.New("format: round-trip re-parse failed — refusing to emit bytes that are not valid YAML")
 
+// ErrDuplicateKeys is returned when the input mapping contains the same key
+// more than once. yaml.Unmarshal into a *yaml.Node tree (which fmt uses to
+// preserve structure for canonical reordering) silently accepts duplicate
+// mapping keys. lint and diff route through parse.ParseBytes, which strict-
+// decodes into a typed struct — that path REJECTS duplicates with a clear
+// "mapping key 'x' already defined at line N" error. Without this guard, a
+// user running `lint file.yml` would see exit 3 ("parse error: mapping key
+// 'x' already defined"), then `fmt -w file.yml` would silently succeed and
+// rewrite the (still-duplicated) file in place — exactly the cross-command
+// parity gap that Cycle G fixed for non-mapping roots and Cycle E fixed for
+// UTF-16. We now refuse fmt on duplicate-key input so all three subcommands
+// agree on what a "valid Dify DSL file" is. The yaml.v3 error already names
+// the offending line; we keep its wording verbatim for parity with lint.
+var ErrDuplicateKeys = errors.New("format: duplicate mapping keys are not supported (lint/diff reject these too)")
+
 // skipAnchorCheck is a test-only hook that bypasses the anchor pre-check so
 // the round-trip self-check below can be exercised on anchored input. In
 // production this is always false. Keeping the override here (rather than a
@@ -106,6 +121,25 @@ func Format(src []byte) ([]byte, error) {
 	// silently truncate a multi-doc file to doc #1 on disk. See ErrMultiDoc.
 	if isMultiDoc(src) {
 		return nil, ErrMultiDoc
+	}
+	// Reject duplicate mapping keys BEFORE the *yaml.Node unmarshal below.
+	// yaml.Unmarshal into a *yaml.Node tree silently accepts duplicates (it
+	// only parses structure). Decoding into a generic `any` triggers yaml.v3's
+	// strict map-population path which rejects duplicates with a clear line-
+	// numbered error — the same path parse.ParseBytes uses, so lint/diff/fmt
+	// now agree on what a valid Dify DSL is. We only flag the duplicate-key
+	// shape here; any OTHER yaml.Unmarshal error is left to the *yaml.Node
+	// unmarshal below to surface with its existing wording (so we don't lie
+	// about, say, malformed YAML being a "duplicate key" issue).
+	{
+		var probe any
+		if perr := yaml.Unmarshal(src, &probe); perr != nil {
+			if strings.Contains(perr.Error(), "already defined at line") {
+				return nil, fmt.Errorf("%w: %v", ErrDuplicateKeys, perr)
+			}
+			// Other errors fall through — the *yaml.Node unmarshal below will
+			// surface them with the same wording fmt has always returned.
+		}
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(src, &root); err != nil {

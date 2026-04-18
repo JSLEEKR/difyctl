@@ -490,6 +490,72 @@ func TestFormat_RoundTripDoesNotSpuriouslyFail(t *testing.T) {
 	}
 }
 
+// TestFormat_DuplicateKeysRejected is the Cycle K regression. lint and diff
+// route through parse.ParseBytes which strict-decodes into a typed struct and
+// rejects duplicate mapping keys with a clear error (yaml.v3's strict map-
+// population path). fmt's Format used to ingest src into a *yaml.Node tree,
+// which silently TOLERATES duplicate keys — re-emitting both copies. A user
+// running `difyctl lint file.yml` would see exit 3 ("duplicate key 'x' at
+// line N"), then `difyctl fmt -w file.yml` would silently succeed and rewrite
+// the still-duplicated file in place. This is exactly the cross-command
+// parity gap that Cycle G fixed for non-mapping roots and Cycle E for UTF-16:
+// fmt was ACCEPTING input that lint REJECTED, so users could not trust either
+// command's verdict on what counts as a valid Dify DSL. We now refuse fmt on
+// duplicate-key input. The yaml.v3 error already carries line numbers; we
+// wrap it with ErrDuplicateKeys so callers can errors.Is on it.
+func TestFormat_DuplicateKeysRejected(t *testing.T) {
+	cases := map[string]string{
+		"top-level-dup": `app:
+  name: A
+  mode: workflow
+kind: app
+kind: app
+version: "0.1"
+workflow: {graph: {nodes: [], edges: []}}
+`,
+		"in-app-block-dup": `app:
+  name: A
+  name: B
+  mode: workflow
+kind: app
+version: "0.1"
+workflow: {graph: {nodes: [], edges: []}}
+`,
+		"in-node-data-dup": `app:
+  name: A
+  mode: workflow
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: s
+        type: start
+        data:
+          title: S
+          x: 1
+          x: 2
+    edges: []
+`,
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := Format([]byte(src))
+			if err == nil {
+				t.Fatalf("want ErrDuplicateKeys, got bytes: %q — fmt -w would silently rewrite a file lint rejects", out)
+			}
+			if !errors.Is(err, ErrDuplicateKeys) {
+				t.Fatalf("want ErrDuplicateKeys, got %v", err)
+			}
+			// And the wrapped yaml.v3 error must still carry the line number
+			// (so users can find the offending line just like lint reports it).
+			if !strings.Contains(err.Error(), "already defined at line") {
+				t.Fatalf("error message lost the line-number context from yaml.v3: %v", err)
+			}
+		})
+	}
+}
+
 func TestFormat_DataAlphabeticalExceptTitle(t *testing.T) {
 	input := `app: {name: X, mode: workflow, description: ""}
 kind: app
