@@ -53,6 +53,22 @@ func LoadFile(path string) (*model.Workflow, error) {
 	return wf, nil
 }
 
+// Validate runs the same syntactic and shape checks as ParseBytes but discards
+// the decoded result. Use this when you only need a "is this valid Dify DSL?"
+// answer without paying for the line-number annotation pass.
+//
+// Why it exists: prior cycles E, G, H, I, K all patched the same class of bug —
+// fmt's input acceptance diverged from parse's strict-decode rules, so a user
+// could `lint file.yml` (exit 3) then `fmt -w file.yml` (silently rewrite) on
+// the same file. Each cycle added one more per-shape gate to fmt to close the
+// gap. This helper lets fmt route input through the SAME validator lint uses,
+// so any future strict-decode rule added here is automatically inherited by
+// fmt — eliminating the recurring drift.
+func Validate(b []byte) error {
+	_, err := ParseBytes(b)
+	return err
+}
+
 // ParseBytes parses a YAML byte slice into a Workflow.
 func ParseBytes(b []byte) (*model.Workflow, error) {
 	if len(b) == 0 {

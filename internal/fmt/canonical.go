@@ -11,11 +11,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
 	"github.com/JSLEEKR/difyctl/internal/fileio"
+	"github.com/JSLEEKR/difyctl/internal/parse"
 	"gopkg.in/yaml.v3"
 )
 
@@ -113,71 +113,66 @@ func Format(src []byte) ([]byte, error) {
 	if fileio.HasNonUTF8BOM(src) {
 		return nil, ErrEncoding
 	}
+	// Architectural single-source-of-truth gate (Cycle L). Cycles E/G/H/I/K
+	// each patched ONE shape of "fmt accepts what lint rejects" with a
+	// per-class gate (BOM, non-mapping root, multi-doc, anchors, dup keys).
+	// The recurring root cause: fmt unmarshals into *yaml.Node (lenient) while
+	// lint goes through parse.ParseBytes (strict typed-struct decode). Routing
+	// fmt input through parse.Validate — the SAME code path lint uses —
+	// subsumes the per-class checks for: empty/whitespace, multi-doc,
+	// non-mapping root, comment-only, null scalar, dup keys, AND newly-
+	// discovered shapes lint already rejected but fmt previously accepted:
+	//   - Complex YAML keys (`? [a, b]: c`) inside data
+	//   - Sequence as `data` value (`data: [1, 2]`)
+	//   - Scalar as `app` (`app: not-a-map`)
+	//   - Sequence as `nodes` (`nodes: not-a-seq`)
+	//   - Mapping as `version` (`version: {major: 0}`)
+	// Future strict-decode rules added to parse automatically apply to fmt
+	// with no fmt change required. Map well-known parse failures back to the
+	// existing fmt sentinels so callers using errors.Is keep working.
+	if vErr := parse.Validate(src); vErr != nil {
+		switch {
+		case errors.Is(vErr, parse.ErrMultiDoc):
+			return nil, ErrMultiDoc
+		case strings.Contains(vErr.Error(), "already defined at line"):
+			return nil, fmt.Errorf("%w: %v", ErrDuplicateKeys, vErr)
+		case strings.Contains(vErr.Error(), "empty document"):
+			return nil, ErrEmpty
+		case strings.Contains(vErr.Error(), "root must be a mapping"):
+			return nil, ErrNotMapping
+		default:
+			// Generic parse error (malformed YAML, decode shape mismatch,
+			// etc.) — surface as-is. Tests assert err != nil; the wording is
+			// the same yaml.v3 message fmt would have returned previously,
+			// just wrapped with parse.ErrParse for context.
+			return nil, vErr
+		}
+	}
+	// Belt-and-suspenders: parse.Validate already rejected whitespace-only
+	// input (yaml.v3 returns "root must be a mapping" for it), but the
+	// downstream Node-tree code below assumes len(TrimSpace(src)) > 0 in
+	// places that could otherwise produce surprising empty output if some
+	// future parse change relaxed that. Cheap; no test impact.
 	if len(bytes.TrimSpace(src)) == 0 {
 		return nil, ErrEmpty
 	}
-	// Reject multi-document input BEFORE Unmarshal. yaml.Unmarshal happily
-	// returns only the first doc, so without this guard `fmt -w` would
-	// silently truncate a multi-doc file to doc #1 on disk. See ErrMultiDoc.
-	if isMultiDoc(src) {
-		return nil, ErrMultiDoc
-	}
-	// Reject duplicate mapping keys BEFORE the *yaml.Node unmarshal below.
-	// yaml.Unmarshal into a *yaml.Node tree silently accepts duplicates (it
-	// only parses structure). Decoding into a generic `any` triggers yaml.v3's
-	// strict map-population path which rejects duplicates with a clear line-
-	// numbered error — the same path parse.ParseBytes uses, so lint/diff/fmt
-	// now agree on what a valid Dify DSL is. We only flag the duplicate-key
-	// shape here; any OTHER yaml.Unmarshal error is left to the *yaml.Node
-	// unmarshal below to surface with its existing wording (so we don't lie
-	// about, say, malformed YAML being a "duplicate key" issue).
-	{
-		var probe any
-		if perr := yaml.Unmarshal(src, &probe); perr != nil {
-			if strings.Contains(perr.Error(), "already defined at line") {
-				return nil, fmt.Errorf("%w: %v", ErrDuplicateKeys, perr)
-			}
-			// Other errors fall through — the *yaml.Node unmarshal below will
-			// surface them with the same wording fmt has always returned.
-		}
-	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(src, &root); err != nil {
+		// parse.Validate above already surfaced any yaml.Unmarshal failure, so
+		// reaching here means the *yaml.Node unmarshal disagreed with the
+		// any/typed-struct decode. Extremely unlikely; bail rather than
+		// proceed on a Node tree we can't trust.
 		return nil, err
 	}
 	// Reject anchors/aliases. Canonical reordering can move an anchor AFTER
 	// the alias that references it, producing invalid YAML on re-emit. Rather
 	// than silently corrupting the user's file on `fmt -w`, we refuse. Dify
 	// DSL exports do not use anchors; hand-crafted files must be de-anchored
-	// before formatting. See ErrAnchors.
+	// before formatting. parse.Validate above does NOT reject anchors (yaml.v3
+	// resolves them transparently into the typed struct), so this gate stays.
+	// See ErrAnchors.
 	if !skipAnchorCheck && hasAnchors(&root) {
 		return nil, ErrAnchors
-	}
-	// Reject cases where the document has no content — e.g. a file that is
-	// only YAML comments like `# nothing here`. yaml.v3 parses these to a
-	// DocumentNode with zero children and would otherwise marshal back as the
-	// literal string "null\n", clobbering the user's comment-only file.
-	if root.Kind == 0 || (root.Kind == yaml.DocumentNode && len(root.Content) == 0) {
-		return nil, ErrEmpty
-	}
-	// Reject cases where the document decoded to a null scalar (e.g. input
-	// like "~" or "null"): we have nothing meaningful to re-emit.
-	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
-		c := root.Content[0]
-		if c.Kind == yaml.ScalarNode && (c.Tag == "!!null" || strings.EqualFold(c.Value, "null") || c.Value == "~" || c.Value == "") {
-			return nil, ErrEmpty
-		}
-	}
-	// Reject non-mapping roots (bare scalars `42`/`true`/`foo` or top-level
-	// sequences `- a\n- b`). parse.ParseBytes — which backs lint and diff —
-	// rejects the same inputs with "root must be a mapping". Without this
-	// parity check, `difyctl fmt` would silently accept garbage that lint and
-	// diff refuse. See TestFormat_NonMappingRootRejected for the regression.
-	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
-		c := root.Content[0]
-		if c.Kind != yaml.MappingNode {
-			return nil, ErrNotMapping
-		}
 	}
 	doc := &root
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
@@ -386,38 +381,6 @@ func sortNodesSeq(root *yaml.Node) {
 	nodes.Content = out
 }
 
-// isMultiDoc reports whether src contains more than one YAML document with
-// actual content. Implemented locally rather than delegating to
-// internal/parse to avoid an fmt→parse dep (parse already depends on fmt's
-// sibling fileio; keeping fmt parse-free makes the dep graph a DAG). The
-// detection is a small yaml.NewDecoder probe — cost of duplication is
-// trivial. See parse.IsMultiDoc for the sibling implementation with the same
-// semantics, including the trailing-`---`-carve-out.
-func isMultiDoc(src []byte) bool {
-	dec := yaml.NewDecoder(bytes.NewReader(src))
-	var first yaml.Node
-	if err := dec.Decode(&first); err != nil {
-		// Empty or malformed; caller's Unmarshal will surface the error.
-		return false
-	}
-	for {
-		var next yaml.Node
-		err := dec.Decode(&next)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return false
-			}
-			// Unparseable second doc — still multi-doc.
-			return true
-		}
-		if docIsEmpty(&next) {
-			// Trailing `---\n` with no content — skip.
-			continue
-		}
-		return true
-	}
-}
-
 // hasAnchors reports whether the node tree contains any YAML anchor (&name)
 // or alias (*name). Canonical reordering — top-level keys, node id sort,
 // edge id sort — can move an anchor AFTER its alias in the emitted stream,
@@ -434,25 +397,6 @@ func hasAnchors(n *yaml.Node) bool {
 	}
 	for _, c := range n.Content {
 		if hasAnchors(c) {
-			return true
-		}
-	}
-	return false
-}
-
-// docIsEmpty mirrors parse.docIsEmpty — duplicated here because fmt
-// intentionally does not import parse (keeps the dep graph a DAG). See the
-// comment on isMultiDoc for the rationale.
-func docIsEmpty(n *yaml.Node) bool {
-	if n == nil || n.Kind == 0 {
-		return true
-	}
-	if n.Kind == yaml.DocumentNode {
-		if len(n.Content) == 0 {
-			return true
-		}
-		c := n.Content[0]
-		if c.Kind == yaml.ScalarNode && c.Tag == "!!null" && c.Value == "" {
 			return true
 		}
 	}
