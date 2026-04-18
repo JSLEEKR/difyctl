@@ -9,17 +9,37 @@ package fmt
 
 import (
 	"bytes"
+	"errors"
 	"sort"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+// ErrEmpty is returned when Format is called on an empty or whitespace-only
+// document. yaml.v3 would otherwise silently marshal such input to the string
+// "null\n", which is surprising for `fmt -w` (it clobbers the user's empty
+// file with literal "null") and inconsistent with parse.ParseBytes which
+// rejects empty documents.
+var ErrEmpty = errors.New("format: empty document")
+
 // Format parses src YAML and returns canonically ordered YAML bytes. Unknown
 // keys keep their original relative order after the ranked keys.
 func Format(src []byte) ([]byte, error) {
+	if len(bytes.TrimSpace(src)) == 0 {
+		return nil, ErrEmpty
+	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(src, &root); err != nil {
 		return nil, err
+	}
+	// Reject cases where the document decoded to a null scalar (e.g. input
+	// like "~" or "null"): we have nothing meaningful to re-emit.
+	if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+		c := root.Content[0]
+		if c.Kind == yaml.ScalarNode && (c.Tag == "!!null" || strings.EqualFold(c.Value, "null") || c.Value == "~" || c.Value == "") {
+			return nil, ErrEmpty
+		}
 	}
 	doc := &root
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {

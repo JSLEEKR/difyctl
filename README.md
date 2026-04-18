@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-v1.0.0-brightgreen?style=for-the-badge)](./CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-141_passing-success?style=for-the-badge)](#testing)
+[![Tests](https://img.shields.io/badge/tests-146_passing-success?style=for-the-badge)](#testing)
 [![Rules](https://img.shields.io/badge/lint_rules-20-blue?style=for-the-badge)](#rule-catalog)
 [![Build](https://img.shields.io/badge/build-go_build_clean-success?style=for-the-badge)](#building)
 
@@ -190,6 +190,22 @@ Text output categorizes changes:
 
 summary: 1 breaking, 2 removed, 2 added, 3 changed
 ```
+
+JSON output uses a single envelope shape on both success and error so `jq`
+filters like `.changes[]` work without branching on the exit code:
+
+```json
+{
+  "changes": [
+    { "category": "BREAKING", "kind": "variable-ref", "id": "llm-1", "detail": "reference to {{#start-1.query#}} broken: output 'query' removed from 'start-1'" },
+    { "category": "ADDED",    "kind": "node",         "id": "answer", "detail": "type=answer" }
+  ],
+  "error": null
+}
+```
+
+On IO/parse failure the shape is identical except `error` is a string and
+`changes` is `[]` — consumers never see empty stdout.
 
 ### `difyctl fmt`
 
@@ -409,7 +425,7 @@ ok   github.com/JSLEEKR/difyctl/internal/parse      0.004s
 ok   github.com/JSLEEKR/difyctl/internal/varref     0.002s
 ```
 
-- **141 tests** across 7 packages.
+- **146 tests** across 7 packages.
 - Rule tests are table-driven — one test file per rule, each exercising the happy path and at least one failure case.
 - `internal/fmt` has an idempotence test (`fmt(fmt(x)) == fmt(x)`) that will catch ANY accidental key re-ordering drift.
 - `internal/parse` has a "no-panic on garbage bytes" test covering binary noise and malformed YAML.

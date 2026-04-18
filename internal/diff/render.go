@@ -44,12 +44,22 @@ func RenderText(w io.Writer, changes []Change) {
 	}
 }
 
-// RenderJSON prints a JSON array of change records.
+// RenderJSON prints the diff as a JSON object envelope so that consumers piping
+// into jq/yq see the SAME top-level shape on success and on error paths. See
+// RenderJSONError in diff.go for the error variant. Previously success emitted
+// a bare JSON array and error emitted a `{error, changes}` object — jq filters
+// like `.changes[]` could not unify the two, forcing callers to branch on exit
+// code before parsing. The envelope is now always:
+//
+//	{ "changes": [...], "error": null | "message" }
 func RenderJSON(w io.Writer, changes []Change) error {
 	if changes == nil {
 		changes = []Change{}
 	}
-	buf, err := json.MarshalIndent(changes, "", "  ")
+	buf, err := json.MarshalIndent(map[string]any{
+		"changes": changes,
+		"error":   nil,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-04-19 (Cycle C hardening)
+
+### Changed
+- `diff --format json` now emits a uniform `{changes: [...], error: null | "..."}` envelope on BOTH success and error paths. Previously success emitted a bare JSON array while error emitted an object, so `jq` filters like `.changes[]` could not unify the two without branching on exit code. Consumers that parsed `.changes[]` already keep working; consumers that assumed a top-level array must switch to `.changes[]`.
+
+### Fixed
+- `fmt -w link.yml` on a symlink no longer replaces the symlink with a regular file. We now `EvalSymlinks` to resolve the target, then atomically rename over the TARGET — the symlink stays a symlink, just pointing at the newly-rewritten bytes.
+- `fmt` on an empty or whitespace-only document now errors out (`format: empty document`) instead of silently clobbering the file with the literal string `null\n`. Likewise for inputs that decode to a bare null scalar (`~`, `null`).
+
 ## [1.0.0] — 2026-04-19
 
 ### Added

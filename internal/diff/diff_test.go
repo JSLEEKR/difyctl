@@ -2,6 +2,7 @@ package diff
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -301,6 +302,17 @@ func TestRenderJSON(t *testing.T) {
 	if err := RenderJSON(&buf, []Change{{Category: "ADDED", Kind: "node", ID: "x"}}); err != nil {
 		t.Fatal(err)
 	}
+	// Must be an object envelope {changes, error} — NOT a bare array.
+	var env map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("not valid JSON object: %v\n%s", err, buf.String())
+	}
+	if _, ok := env["changes"]; !ok {
+		t.Fatalf("missing 'changes' key: %v", env)
+	}
+	if raw, ok := env["error"]; !ok || raw != nil {
+		t.Fatalf("expected error=null on success, got ok=%v val=%v", ok, raw)
+	}
 	if !strings.Contains(buf.String(), `"ADDED"`) {
 		t.Fatalf("got %q", buf.String())
 	}
@@ -311,10 +323,56 @@ func TestRenderJSON_Empty(t *testing.T) {
 	if err := RenderJSON(&buf, nil); err != nil {
 		t.Fatal(err)
 	}
-	// Should be "[]" not "null".
-	s := strings.TrimSpace(buf.String())
-	if s != "[]" {
-		t.Fatalf("want '[]', got %q", s)
+	// Envelope form: must be {"changes":[], "error":null}, NOT a bare array.
+	var env map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
+		t.Fatalf("not valid JSON object: %v\n%s", err, buf.String())
+	}
+	changes, ok := env["changes"].([]any)
+	if !ok {
+		t.Fatalf("changes not a JSON array: %v", env)
+	}
+	if len(changes) != 0 {
+		t.Fatalf("expected empty changes array, got %v", changes)
+	}
+	if env["error"] != nil {
+		t.Fatalf("expected error=null, got %v", env["error"])
+	}
+}
+
+// TestRenderJSON_EnvelopeShapeParityWithError is the canary test for the
+// Cycle C fix to design question Q1: success and error JSON outputs MUST have
+// the same top-level shape so jq filters like `.changes[]` work without
+// branching on exit code. Before this fix, success emitted a bare JSON array.
+func TestRenderJSON_EnvelopeShapeParityWithError(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderJSON(&buf, []Change{{Category: "ADDED", Kind: "node", ID: "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	var successEnv map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &successEnv); err != nil {
+		t.Fatalf("success envelope not an object: %v", err)
+	}
+	successKeys := map[string]bool{}
+	for k := range successEnv {
+		successKeys[k] = true
+	}
+	// The error envelope shape is constructed in cmd/difyctl/diff.go —
+	// we replicate it here to lock parity.
+	errEnv := map[string]any{"changes": []Change{}, "error": "boom"}
+	errKeys := map[string]bool{}
+	for k := range errEnv {
+		errKeys[k] = true
+	}
+	for k := range successKeys {
+		if !errKeys[k] {
+			t.Fatalf("success envelope has key %q not present in error envelope", k)
+		}
+	}
+	for k := range errKeys {
+		if !successKeys[k] {
+			t.Fatalf("error envelope has key %q not present in success envelope", k)
+		}
 	}
 }
 

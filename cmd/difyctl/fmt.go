@@ -47,11 +47,30 @@ func runFmt(args []string, stdout, stderr io.Writer) (int, error) {
 // original file's permission bits. A crash between write and rename leaves the
 // original file untouched (rather than truncated to zero bytes, which is what
 // os.WriteFile would do).
+//
+// Symlinks: if path is a symlink, we follow it and write to the target file.
+// The atomic rename therefore replaces the TARGET, not the symlink itself —
+// which is the behavior users intuitively expect from `fmt -w my-link.yml`
+// (the symlink should remain a symlink pointing at the updated target).
+// Previously, os.Rename(tmp, path) would silently replace the symlink with a
+// regular file, which is surprising and corrupts the working-tree shape.
 func writeFileAtomic(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	// Capture original mode so permissions survive the rename.
+	// Resolve symlinks so the rename replaces the ACTUAL file, not the link.
+	// We use EvalSymlinks only when the path is in fact a symlink, so that
+	// nonexistent paths still yield the original clean error at the caller.
+	target := path
+	if li, err := os.Lstat(path); err == nil && li.Mode()&os.ModeSymlink != 0 {
+		resolved, rerr := filepath.EvalSymlinks(path)
+		if rerr != nil {
+			return rerr
+		}
+		target = resolved
+	}
+	dir := filepath.Dir(target)
+	// Capture original mode so permissions survive the rename. Use Stat
+	// (follows symlinks) so permissions come from the resolved target.
 	mode := os.FileMode(0o644)
-	if info, err := os.Stat(path); err == nil {
+	if info, err := os.Stat(target); err == nil {
 		mode = info.Mode().Perm()
 	}
 	tmp, err := os.CreateTemp(dir, ".difyctl-fmt-*")
@@ -79,7 +98,7 @@ func writeFileAtomic(path string, data []byte) error {
 		cleanup()
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := os.Rename(tmpName, target); err != nil {
 		cleanup()
 		return err
 	}

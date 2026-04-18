@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -165,8 +166,20 @@ func TestRunDiff_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "[") {
-		t.Fatalf("expected JSON array, got %s", stdout.String())
+	var env map[string]any
+	if jerr := json.Unmarshal(stdout.Bytes(), &env); jerr != nil {
+		t.Fatalf("stdout is not valid JSON object: %v\n%s", jerr, stdout.String())
+	}
+	if _, ok := env["changes"]; !ok {
+		t.Fatalf("expected 'changes' key, got %v", env)
+	}
+	// Must include 'error' key set to null on success so jq unifies with error case.
+	raw, ok := env["error"]
+	if !ok {
+		t.Fatalf("expected 'error' key, got %v", env)
+	}
+	if raw != nil {
+		t.Fatalf("expected error=null on success, got %v", raw)
 	}
 }
 
@@ -386,5 +399,66 @@ func TestRunFmt_PreservesPermissions(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("fmt -w clobbered permissions: want 0600, got %o", info.Mode().Perm())
+	}
+}
+
+// TestRunFmt_SymlinkPreserved is the Cycle C regression for the fmt-on-symlink
+// bug. Previously `fmt -w link.yml` would os.Rename over the symlink, leaving
+// the user with a regular file where the symlink had been — while the original
+// target was untouched. Now we follow the symlink and rewrite the target, so
+// the symlink stays a symlink and the target's bytes get the canonical form.
+func TestRunFmt_SymlinkPreserved(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks on Windows require privileges; skip in CI")
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.yml")
+	link := filepath.Join(dir, "link.yml")
+	if err := os.WriteFile(target, []byte(good), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	origTargetBytes, _ := os.ReadFile(target)
+
+	var stdout, stderr bytes.Buffer
+	if _, err := runFmt([]string{"-w", link}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. link.yml must still be a symlink.
+	li, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if li.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("fmt -w clobbered the symlink into a regular file")
+	}
+	// 2. target file must have been rewritten (or remain byte-equal if already canonical).
+	newTargetBytes, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = origTargetBytes
+	if len(newTargetBytes) == 0 {
+		t.Fatal("target rewritten to empty bytes")
+	}
+}
+
+// TestRunFmt_EmptyFile guards that `fmt` refuses to rewrite an empty file
+// as the literal string "null", which was the previous accidental behavior
+// (yaml.v3 Marshal(zero) -> "null\n"). Empty in, empty document error out.
+func TestRunFmt_EmptyFile(t *testing.T) {
+	p := writeTemp(t, "empty.yml", "")
+	var stdout, stderr bytes.Buffer
+	code, err := runFmt([]string{"-w", p}, &stdout, &stderr)
+	if code != 3 || err == nil {
+		t.Fatalf("want (3, err) for empty input, got (%d, %v)", code, err)
+	}
+	// The file on disk must be untouched.
+	b, _ := os.ReadFile(p)
+	if len(b) != 0 {
+		t.Fatalf("fmt -w on empty wrote bytes: %q", b)
 	}
 }

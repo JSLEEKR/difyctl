@@ -111,6 +111,29 @@ func TestFormat_InvalidYAMLReturnsError(t *testing.T) {
 	}
 }
 
+// TestFormat_EmptyRejected guards the Cycle C fix: an empty or whitespace-only
+// input must NOT be "formatted" into the literal bytes "null\n", which was the
+// previous accidental behavior inherited from yaml.v3's marshaling of a zero
+// Node. Empty in, ErrEmpty out — the caller (cmd/difyctl/fmt.go) can then
+// decide whether to leave the file alone or surface an error.
+func TestFormat_EmptyRejected(t *testing.T) {
+	for _, src := range []string{"", "   ", "\n\n\t\n"} {
+		if _, err := Format([]byte(src)); err == nil {
+			t.Fatalf("want ErrEmpty for %q, got nil", src)
+		}
+	}
+}
+
+// TestFormat_NullDocumentRejected covers inputs like "~" or literal "null".
+// These decode to a null scalar and have no meaningful canonical form.
+func TestFormat_NullDocumentRejected(t *testing.T) {
+	for _, src := range []string{"~", "null", "NULL\n"} {
+		if _, err := Format([]byte(src)); err == nil {
+			t.Fatalf("want error for null scalar %q, got nil", src)
+		}
+	}
+}
+
 func TestFormat_AppBlockKeyOrder(t *testing.T) {
 	out, err := Format([]byte(scrambled))
 	if err != nil {

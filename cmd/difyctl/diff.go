@@ -61,12 +61,14 @@ func runDiff(args []string, stdout, stderr io.Writer) (int, error) {
 	return 0, nil
 }
 
-// emitDiffErrorJSON writes a single-element error envelope to stdout so that
-// callers parsing JSON output don't get empty input on IO/parse failure.
+// emitDiffErrorJSON writes the error envelope to stdout. The top-level shape
+// matches diff.RenderJSON on success — `{changes, error}` — so that jq/yq
+// filters like `.changes[]` behave uniformly regardless of whether the command
+// succeeded. The only diff is `error` is a string instead of null.
 func emitDiffErrorJSON(w io.Writer, err error) {
 	env, _ := json.MarshalIndent(map[string]any{
-		"error":   err.Error(),
 		"changes": []diff.Change{},
+		"error":   err.Error(),
 	}, "", "  ")
 	fmt.Fprintln(w, string(env))
 }
