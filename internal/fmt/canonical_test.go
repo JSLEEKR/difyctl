@@ -2,6 +2,7 @@ package fmt
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -405,6 +406,87 @@ workflow:
 	}
 	if !(iEmpty > iC) {
 		t.Fatalf("empty-id node must appear after all id'd nodes: c=%d empty=%d\n%s", iC, iEmpty, s)
+	}
+}
+
+// TestFormat_RoundTripSelfCheck is Cycle J's architectural regression. The
+// previous cycles E (UTF-16), H (multi-doc), and I (anchors) each patched one
+// shape of "Format produced bytes that aren't valid Dify DSL on re-parse"
+// with a dedicated per-class gate. A round-trip self-check at the end of
+// Format catches the entire class in one place: if the canonically
+// re-emitted bytes fail to yaml.Unmarshal, we refuse to return them so that
+// `fmt -w` never writes a corrupted file to disk.
+//
+// This test bypasses the anchor pre-check to construct a case where Format
+// WOULD emit invalid YAML (anchor-owner sorted after alias-user), and asserts
+// that the round-trip check fires. If this test ever regresses, the
+// architectural backstop is broken and the N=4 cascade that Cycles E/H/I/J
+// avoided will return the next time yaml.v3 surprises us.
+func TestFormat_RoundTripSelfCheck(t *testing.T) {
+	// Input: the "anchor-in-node-data" shape from TestFormat_AnchorsRejected.
+	// After canonical sort-by-id, node 'e' (alias user) appears BEFORE node 's'
+	// (anchor owner), which yaml.v3 re-parses as "unknown anchor 'a'".
+	const anchored = `app: {name: X, mode: workflow}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: s
+        type: start
+        data: &a
+          x: 1
+      - id: e
+        type: end
+        data: *a
+    edges: []
+`
+	// Sanity: the anchor pre-check rejects this in normal operation. We want
+	// to prove the round-trip check ALSO rejects it if the anchor pre-check
+	// were ever removed or bypassed.
+	prev := skipAnchorCheck
+	skipAnchorCheck = true
+	defer func() { skipAnchorCheck = prev }()
+
+	_, err := Format([]byte(anchored))
+	if err == nil {
+		t.Fatal("want round-trip error when anchor check is bypassed, got nil — architectural backstop is broken")
+	}
+	if !errors.Is(err, ErrRoundTrip) {
+		t.Fatalf("want ErrRoundTrip, got %v", err)
+	}
+}
+
+// TestFormat_RoundTripDoesNotSpuriouslyFail is the negative side of the
+// round-trip self-check. Every shape of valid Dify DSL that the prior cycles
+// locked in must pass through Format WITHOUT tripping the round-trip gate.
+// If this regresses, the architectural change has broken backwards
+// compatibility — any of the 200+ existing tests could have caught it, but we
+// want an explicit assertion here so the intent is clear.
+func TestFormat_RoundTripDoesNotSpuriouslyFail(t *testing.T) {
+	cases := map[string]string{
+		"basic-scrambled": scrambled,
+		"utf8-bom-plus-good": "\xef\xbb\xbfapp: {name: X, mode: workflow, description: \"\"}\n" +
+			"kind: app\nversion: \"0.1\"\nworkflow: {graph: {nodes: [], edges: []}}\n",
+		"trailing-doc-marker": "app: {name: X, mode: workflow, description: \"\"}\n" +
+			"kind: app\nversion: \"0.1\"\nworkflow: {graph: {nodes: [], edges: []}}\n---\n",
+		"unicode-u2028-in-string": "app:\n  name: A\n  mode: workflow\n  description: \"a\u2028b\"\n" +
+			"kind: app\nversion: \"0.1\"\nworkflow: {graph: {nodes: [], edges: []}}\n",
+		"timestamp-looking-id": "app: {name: A, mode: workflow}\nkind: app\nversion: \"0.1\"\n" +
+			"workflow:\n  graph:\n    nodes:\n      - {id: 2024-01-01, type: start, data: {title: X}}\n    edges: []\n",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := Format([]byte(src))
+			if err != nil {
+				t.Fatalf("round-trip check spuriously rejected %q: %v", name, err)
+			}
+			// And re-formatting the output must also succeed — tightens the
+			// invariant that round-trip is not order-dependent.
+			if _, err := Format(out); err != nil {
+				t.Fatalf("second Format of %q output failed: %v", name, err)
+			}
+		})
 	}
 }
 

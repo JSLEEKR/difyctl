@@ -10,6 +10,7 @@ package fmt
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
@@ -63,6 +64,27 @@ var ErrMultiDoc = errors.New("format: multi-document YAML not supported (Dify DS
 // file.
 var ErrAnchors = errors.New("format: YAML anchors/aliases (&name / *name) are not supported — canonical reordering would break them")
 
+// ErrRoundTrip is returned when the canonically re-emitted bytes fail to
+// re-parse as YAML. This is the architectural backstop for the class of
+// silent-data-loss bugs that Cycles E (UTF-16 ASCII-stripping), H (multi-doc
+// truncation), and I (anchor-alias reorder producing invalid YAML) all
+// belonged to: each was a case where Format returned (bytes, nil) but the
+// returned bytes were NOT a valid Dify DSL on their face. `fmt -w` then
+// persisted corrupted bytes to disk. Per-class gates (one per Cycle) kept
+// catching the specific symptom; a round-trip self-check catches the whole
+// class at once. If Format ever produces bytes yaml.v3 cannot re-parse, we
+// refuse the write rather than corrupt the file. The check is strict about
+// "re-parses as YAML"; semantic equivalence (idempotence) is a stronger
+// property already covered by TestFormat_Idempotent.
+var ErrRoundTrip = errors.New("format: round-trip re-parse failed — refusing to emit bytes that are not valid YAML")
+
+// skipAnchorCheck is a test-only hook that bypasses the anchor pre-check so
+// the round-trip self-check below can be exercised on anchored input. In
+// production this is always false. Keeping the override here (rather than a
+// duplicated format-without-anchor helper) avoids drift between the test path
+// and the real one.
+var skipAnchorCheck = false
+
 // Format parses src YAML and returns canonically ordered YAML bytes. Unknown
 // keys keep their original relative order after the ranked keys.
 func Format(src []byte) ([]byte, error) {
@@ -94,7 +116,7 @@ func Format(src []byte) ([]byte, error) {
 	// than silently corrupting the user's file on `fmt -w`, we refuse. Dify
 	// DSL exports do not use anchors; hand-crafted files must be de-anchored
 	// before formatting. See ErrAnchors.
-	if hasAnchors(&root) {
+	if !skipAnchorCheck && hasAnchors(&root) {
 		return nil, ErrAnchors
 	}
 	// Reject cases where the document has no content — e.g. a file that is
@@ -140,7 +162,21 @@ func Format(src []byte) ([]byte, error) {
 	if err := enc.Close(); err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	out := buf.Bytes()
+	// Architectural self-check: ensure the bytes we are about to return re-parse
+	// as YAML. This is the generic backstop for the silent-data-loss cascade
+	// (Cycles E / H / I) where Format returned (bytes, nil) but the bytes were
+	// not a valid document. Catching "bytes are not valid YAML" once here
+	// obviates adding a new per-class gate every time yaml.v3 surprises us with
+	// another shape of broken-on-re-emit input. Cost is one extra yaml.Unmarshal
+	// per Format call — negligible against the ~50 KB real DSLs and bounded by
+	// the 32 MiB file cap. This does NOT guarantee semantic equivalence; that
+	// stronger property is covered by the existing idempotence test.
+	var roundTrip yaml.Node
+	if err := yaml.Unmarshal(out, &roundTrip); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRoundTrip, err)
+	}
+	return out, nil
 }
 
 // order is the canonical key order per parent path. A parent path is a
