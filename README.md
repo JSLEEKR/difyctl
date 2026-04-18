@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-v1.0.0-brightgreen?style=for-the-badge)](./CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-117_passing-success?style=for-the-badge)](#testing)
+[![Tests](https://img.shields.io/badge/tests-141_passing-success?style=for-the-badge)](#testing)
 [![Rules](https://img.shields.io/badge/lint_rules-20-blue?style=for-the-badge)](#rule-catalog)
 [![Build](https://img.shields.io/badge/build-go_build_clean-success?style=for-the-badge)](#building)
 
@@ -252,8 +252,11 @@ Variable references are resolved when the source node declares an output with th
 | `iteration-start`      | `item`, `index`                         |
 | `variable-aggregator`  | `output`                                |
 | `tool`                 | `text`, `files`                         |
+| `question-classifier`  | `class_name`                            |
 
-`start` nodes expose whatever they declare under `data.variables[].variable`. `parameter-extractor` exposes `data.parameters[].name`. `code` declares outputs under `data.outputs`.
+`start` nodes expose whatever they declare under `data.variables[].variable`. `parameter-extractor` exposes `data.parameters[].name`. `variable-assigner` exposes each `data.items[].variable_selector[-1]` (the tail of the assigned path). `code` declares outputs under `data.outputs`.
+
+> Lint (`DIFY013`) and diff (`BREAKING variable-ref`) share a single source of truth for this table — see `internal/varref`. If the two commands ever disagree on whether a given `{{#node.var#}}` resolves, it is a bug in that package.
 
 ---
 
@@ -403,9 +406,10 @@ ok   github.com/JSLEEKR/difyctl/internal/fmt        0.004s
 ok   github.com/JSLEEKR/difyctl/internal/lint       0.023s
 ok   github.com/JSLEEKR/difyctl/internal/model      0.003s
 ok   github.com/JSLEEKR/difyctl/internal/parse      0.004s
+ok   github.com/JSLEEKR/difyctl/internal/varref     0.002s
 ```
 
-- **117 tests** across 6 packages.
+- **141 tests** across 7 packages.
 - Rule tests are table-driven — one test file per rule, each exercising the happy path and at least one failure case.
 - `internal/fmt` has an idempotence test (`fmt(fmt(x)) == fmt(x)`) that will catch ANY accidental key re-ordering drift.
 - `internal/parse` has a "no-panic on garbage bytes" test covering binary noise and malformed YAML.

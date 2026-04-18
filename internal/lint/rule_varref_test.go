@@ -2,6 +2,8 @@ package lint
 
 import (
 	"testing"
+
+	"github.com/JSLEEKR/difyctl/internal/varref"
 )
 
 func TestVarRef_Good(t *testing.T) {
@@ -153,14 +155,14 @@ func TestCollectVarRefs_NestedStrings(t *testing.T) {
 		"a": "hello {{#n.x#}} there",
 		"b": []any{"ok", "{{#m.y#}}", map[string]any{"deep": "{{#d.z#}}"}},
 	}
-	refs := collectVarRefs(data)
+	refs := varref.Collect(data)
 	if len(refs) != 3 {
 		t.Fatalf("want 3 refs, got %v", refs)
 	}
 	// all refs should be captured
 	seen := map[string]bool{}
 	for _, r := range refs {
-		seen[r.nodeID+"."+r.varName] = true
+		seen[r.NodeID+"."+r.VarName] = true
 	}
 	for _, want := range []string{"n.x", "m.y", "d.z"} {
 		if !seen[want] {
@@ -171,11 +173,11 @@ func TestCollectVarRefs_NestedStrings(t *testing.T) {
 
 func TestVarRefPattern_Boundary(t *testing.T) {
 	// Missing closing should not match.
-	if varRefPattern.MatchString("{{#x.y}}") {
+	if varref.Pattern.MatchString("{{#x.y}}") {
 		t.Error("should not match without closing #")
 	}
 	// Leading # missing.
-	if varRefPattern.MatchString("{{x.y#}}") {
+	if varref.Pattern.MatchString("{{x.y#}}") {
 		t.Error("should not match without leading #")
 	}
 }

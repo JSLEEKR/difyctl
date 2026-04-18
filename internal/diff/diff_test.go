@@ -182,6 +182,61 @@ func TestCompute_BodyChanged(t *testing.T) {
 	}
 }
 
+// TestCompute_PreExistingBrokenRefNotBreaking verifies that a reference that
+// was ALREADY broken in a (pre-existing lint DIFY013) is not surfaced again
+// as BREAKING in diff a->b. BREAKING should only reflect changes this diff
+// introduced — pre-existing bugs are noise at this layer.
+func TestCompute_PreExistingBrokenRefNotBreaking(t *testing.T) {
+	// Both a and b reference {{#ghost.x#}} which does not exist in either.
+	src := `app: {name: A, mode: workflow, description: ""}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - {id: s, type: start, data: {title: S, variables: [{variable: q, type: string}]}}
+      - {id: l, type: llm, data: {title: L, model: {provider: o, name: g}, prompt_template: [{role: user, text: "hi {{#ghost.x#}}"}]}}
+      - {id: e, type: end, data: {title: E}}
+    edges:
+      - {source: s, target: l}
+      - {source: l, target: e}
+`
+	a, _ := parse.ParseBytes([]byte(src))
+	b, _ := parse.ParseBytes([]byte(src))
+	for _, c := range Compute(a, b) {
+		if c.Category == CategoryBreaking {
+			t.Fatalf("pre-existing broken ref should not be BREAKING: %+v", c)
+		}
+	}
+}
+
+// TestCompute_IdenticalQuestionClassifierNoBreaking guards the Cycle B drift
+// fix at the diff layer: see internal/varref for the root cause.
+func TestCompute_IdenticalQuestionClassifierNoBreaking(t *testing.T) {
+	src := `app: {name: A, mode: workflow, description: ""}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - {id: s, type: start, data: {title: S, variables: [{variable: q, type: string}]}}
+      - {id: qc, type: question-classifier, data: {title: Q}}
+      - {id: l, type: llm, data: {title: L, model: {provider: o, name: g}, prompt_template: [{role: user, text: "{{#qc.class_name#}}"}]}}
+      - {id: e, type: end, data: {title: E}}
+    edges:
+      - {source: s, target: qc}
+      - {source: qc, target: l}
+      - {source: l, target: e}
+`
+	a, _ := parse.ParseBytes([]byte(src))
+	b, _ := parse.ParseBytes([]byte(src))
+	for _, c := range Compute(a, b) {
+		if c.Category == CategoryBreaking {
+			t.Fatalf("identical workflow with QC must not be BREAKING: %+v", c)
+		}
+	}
+}
+
 func TestCompute_AppMetadata(t *testing.T) {
 	a, _ := parse.ParseBytes([]byte(baseYAML))
 	modified := strings.Replace(baseYAML, "name: A", "name: Renamed", 1)

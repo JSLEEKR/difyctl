@@ -4,16 +4,20 @@
 // changes into ADDED / REMOVED / CHANGED / BREAKING. BREAKING is reserved for
 // changes that are likely to silently break downstream references
 // (e.g. a variable reference whose source no longer exists).
+//
+// Variable-ref parsing and output-declaration semantics are delegated to
+// internal/varref so that lint DIFY013 and diff BREAKING-var-ref can never
+// disagree for identical input.
 package diff
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"regexp"
 	"sort"
 
 	"github.com/JSLEEKR/difyctl/internal/model"
+	"github.com/JSLEEKR/difyctl/internal/varref"
 )
 
 // Category constants.
@@ -140,25 +144,34 @@ func diffEdges(a, b *model.Workflow) []Change {
 
 // diffBreakingVarRefs finds references in `a` whose source (node or variable)
 // is missing or renamed in `b`.
+//
+// A ref is flagged BREAKING only if the SAME ref was resolvable in a (the
+// "before" state). This avoids reporting pre-existing unresolved refs — those
+// are already caught by lint DIFY013 and are not introduced by this diff.
 func diffBreakingVarRefs(a, b *model.Workflow) []Change {
+	aNodes := indexNodes(a)
 	bNodes := indexNodes(b)
-	bOutputs := map[string]map[string]bool{}
-	for id, n := range bNodes {
-		bOutputs[id] = gatherOutputs(n)
-	}
 
 	var out []Change
 	seen := map[string]bool{}
 	for _, n := range a.Workflow.Graph.Nodes {
-		refs := collectVarRefs(n.Data)
+		refs := varref.Collect(n.Data)
 		for _, r := range refs {
 			key := n.ID + "|" + r.NodeID + "." + r.VarName
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			bNode, exists := bNodes[r.NodeID]
-			if !exists {
+
+			// If the reference was ALREADY broken in a, it is not a change we introduced.
+			aSrc, aExisted := aNodes[r.NodeID]
+			aResolved := aExisted && varref.NodeDeclaresOutput(aSrc, r.VarName)
+			if !aResolved {
+				continue
+			}
+
+			bSrc, bExists := bNodes[r.NodeID]
+			if !bExists {
 				out = append(out, Change{
 					Category: CategoryBreaking,
 					Kind:     "variable-ref",
@@ -167,8 +180,7 @@ func diffBreakingVarRefs(a, b *model.Workflow) []Change {
 				})
 				continue
 			}
-			_ = bNode
-			if !bOutputs[r.NodeID][r.VarName] {
+			if !varref.NodeDeclaresOutput(bSrc, r.VarName) {
 				out = append(out, Change{
 					Category: CategoryBreaking,
 					Kind:     "variable-ref",
@@ -259,171 +271,4 @@ func normalize(v any) any {
 		return out
 	}
 	return v
-}
-
-// VarRef is a captured variable reference.
-type VarRef struct {
-	NodeID  string
-	VarName string
-}
-
-var varRefPattern = regexp.MustCompile(`\{\{#([a-zA-Z0-9_\-]+)\.([a-zA-Z0-9_\-]+)#\}\}`)
-
-func collectVarRefs(v any) []VarRef {
-	var out []VarRef
-	walkStrings(v, func(s string) {
-		for _, m := range varRefPattern.FindAllStringSubmatch(s, -1) {
-			out = append(out, VarRef{NodeID: m[1], VarName: m[2]})
-		}
-	})
-	return out
-}
-
-func walkStrings(v any, fn func(string)) {
-	switch t := v.(type) {
-	case string:
-		fn(t)
-	case map[string]any:
-		for _, vv := range t {
-			walkStrings(vv, fn)
-		}
-	case map[any]any:
-		for _, vv := range t {
-			walkStrings(vv, fn)
-		}
-	case []any:
-		for _, vv := range t {
-			walkStrings(vv, fn)
-		}
-	}
-}
-
-// gatherOutputs enumerates the output variable names a node declares.
-func gatherOutputs(n *model.Node) map[string]bool {
-	out := map[string]bool{}
-	if n == nil {
-		return out
-	}
-	// default outputs per type
-	for k, ok := range defaultTypeOutputs(n.Type) {
-		if ok {
-			out[k] = true
-		}
-	}
-	if n.Data == nil {
-		return out
-	}
-	// declared outputs / output_variables.
-	for _, key := range []string{"outputs", "output_variables"} {
-		merge(out, extractOutputs(n.Data[key]))
-	}
-	// start.variables
-	if n.Type == "start" {
-		if vars, ok := n.Data["variables"].([]any); ok {
-			for _, v := range vars {
-				if m := asMap(v); m != nil {
-					if s, ok := m["variable"].(string); ok {
-						out[s] = true
-					}
-					if s, ok := m["name"].(string); ok {
-						out[s] = true
-					}
-				}
-			}
-		}
-	}
-	// parameter-extractor
-	if n.Type == "parameter-extractor" || n.Type == "parameter_extractor" {
-		if params, ok := n.Data["parameters"].([]any); ok {
-			for _, p := range params {
-				if m := asMap(p); m != nil {
-					if s, ok := m["name"].(string); ok {
-						out[s] = true
-					}
-				}
-			}
-		}
-	}
-	return out
-}
-
-func defaultTypeOutputs(t string) map[string]bool {
-	switch t {
-	case "llm":
-		return map[string]bool{"text": true, "usage": true}
-	case "knowledge-retrieval", "knowledge_retrieval":
-		return map[string]bool{"result": true}
-	case "http-request", "http_request":
-		return map[string]bool{"body": true, "status_code": true, "headers": true}
-	case "template-transform", "template_transform":
-		return map[string]bool{"output": true}
-	case "iteration":
-		return map[string]bool{"output": true}
-	case "variable-aggregator", "variable_aggregator":
-		return map[string]bool{"output": true}
-	case "tool":
-		return map[string]bool{"text": true, "files": true}
-	case "iteration-start", "iteration_start":
-		return map[string]bool{"item": true, "index": true}
-	}
-	return map[string]bool{}
-}
-
-func extractOutputs(v any) map[string]bool {
-	out := map[string]bool{}
-	switch t := v.(type) {
-	case []any:
-		for _, el := range t {
-			switch x := el.(type) {
-			case string:
-				out[x] = true
-			case map[string]any:
-				if s, ok := x["name"].(string); ok {
-					out[s] = true
-				}
-				if s, ok := x["variable"].(string); ok {
-					out[s] = true
-				}
-			case map[any]any:
-				if s, ok := x["name"].(string); ok {
-					out[s] = true
-				}
-			}
-		}
-	case map[string]any:
-		for k := range t {
-			out[k] = true
-		}
-	case map[any]any:
-		for k := range t {
-			if s, ok := k.(string); ok {
-				out[s] = true
-			}
-		}
-	}
-	return out
-}
-
-func asMap(v any) map[string]any {
-	switch t := v.(type) {
-	case map[string]any:
-		return t
-	case map[any]any:
-		m := make(map[string]any, len(t))
-		for k, vv := range t {
-			if s, ok := k.(string); ok {
-				m[s] = vv
-			}
-		}
-		return m
-	}
-	return nil
-}
-
-func merge(dst, src map[string]bool) {
-	for k, v := range src {
-		if v {
-			dst[k] = true
-		}
-	}
 }

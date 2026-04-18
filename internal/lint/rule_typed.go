@@ -1,6 +1,9 @@
 package lint
 
-import "github.com/JSLEEKR/difyctl/internal/model"
+import (
+	"github.com/JSLEEKR/difyctl/internal/model"
+	"github.com/JSLEEKR/difyctl/internal/varref"
+)
 
 // DIFY017 — llm-missing-model.
 type ruleLLMMissingModel struct{}
@@ -27,7 +30,7 @@ func (ruleLLMMissingModel) Check(wf *model.Workflow) []Finding {
 			continue
 		}
 		// Expect data.model to be a map with at least provider or name.
-		m := asMap(model)
+		m := varref.AsMap(model)
 		if m == nil {
 			out = append(out, Finding{
 				Rule:     "DIFY017",

@@ -297,3 +297,94 @@ func TestRunDiff_JSONErrorEnvelope(t *testing.T) {
 		t.Fatalf("expected 'error' key, got %v", parsed)
 	}
 }
+
+// TestRunDiff_QuestionClassifierSelfDiff is the end-to-end regression test
+// for the Cycle B drift bug: before the fix, `diff x x` for a workflow that
+// referenced {{#qc.class_name#}} reported a spurious BREAKING change even
+// though the two files were byte-identical, because lint and diff carried
+// duplicated output-declaration helpers that disagreed on question-classifier.
+func TestRunDiff_QuestionClassifierSelfDiff(t *testing.T) {
+	const src = `app: {name: A, mode: workflow, description: ""}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - {id: s, type: start, data: {title: S, variables: [{variable: q, type: string}]}}
+      - {id: qc, type: question-classifier, data: {title: Q}}
+      - {id: l, type: llm, data: {title: L, model: {provider: o, name: g}, prompt_template: [{role: user, text: "{{#qc.class_name#}}"}]}}
+      - {id: e, type: end, data: {title: E}}
+    edges:
+      - {source: s, target: qc}
+      - {source: qc, target: l}
+      - {source: l, target: e}
+`
+	p := writeTemp(t, "qc.yml", src)
+	var stdout, stderr bytes.Buffer
+	code, err := runDiff([]string{p, p}, &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("want (0,nil), got (%d, %v); stdout=%s", code, err, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "BREAKING") {
+		t.Fatalf("self-diff should not report BREAKING: %s", stdout.String())
+	}
+
+	// Same fixture must also pass lint clean — this asserts that the SINGLE
+	// source of truth (internal/varref) agrees for both operations.
+	var lintOut, lintErr bytes.Buffer
+	lc, lerr := runLint([]string{p}, &lintOut, &lintErr)
+	if lerr != nil || lc != 0 {
+		t.Fatalf("lint on same fixture: want (0,nil) got (%d,%v): %s", lc, lerr, lintOut.String())
+	}
+}
+
+// TestRunDiff_VariableAssignerSelfDiff mirrors the above but for variable-assigner
+// nodes, whose outputs are declared via data.items[].variable_selector tails.
+func TestRunDiff_VariableAssignerSelfDiff(t *testing.T) {
+	const src = `app: {name: A, mode: workflow, description: ""}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - {id: s, type: start, data: {title: S, variables: [{variable: q, type: string}]}}
+      - {id: va, type: variable-assigner, data: {title: V, items: [{variable_selector: ["va", "assigned"]}]}}
+      - {id: l, type: llm, data: {title: L, model: {provider: o, name: g}, prompt_template: [{role: user, text: "{{#va.assigned#}}"}]}}
+      - {id: e, type: end, data: {title: E}}
+    edges:
+      - {source: s, target: va}
+      - {source: va, target: l}
+      - {source: l, target: e}
+`
+	p := writeTemp(t, "va.yml", src)
+	var stdout, stderr bytes.Buffer
+	code, err := runDiff([]string{p, p}, &stdout, &stderr)
+	if err != nil || code != 0 {
+		t.Fatalf("want (0,nil), got (%d, %v); stdout=%s", code, err, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "BREAKING") {
+		t.Fatalf("self-diff should not report BREAKING: %s", stdout.String())
+	}
+}
+
+// TestRunFmt_PreservesPermissions ensures fmt -w keeps the file's original mode
+// bits. A previous implementation blindly used 0o644 on WriteFile which would
+// demote a 0o755 script or promote a 0o600 private file.
+func TestRunFmt_PreservesPermissions(t *testing.T) {
+	p := writeTemp(t, "w.yml", good)
+	// Set an unusual mode.
+	if err := os.Chmod(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if _, err := runFmt([]string{"-w", p}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("fmt -w clobbered permissions: want 0600, got %o", info.Mode().Perm())
+	}
+}
