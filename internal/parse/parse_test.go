@@ -151,7 +151,12 @@ func TestParseBytes_MultiDocRejected(t *testing.T) {
 			if !errors.Is(err, ErrParse) {
 				t.Fatalf("want ErrParse, got %v", err)
 			}
-			if !errors.Is(err, ErrMultiDoc) && !strings.Contains(err.Error(), "multi-document") {
+			if !errors.Is(err, ErrMultiDoc) {
+				t.Fatalf("errors.Is(err, ErrMultiDoc) = false — callers using errors.Is on the sentinel are broken. Got err=%v", err)
+			}
+			// Belt-and-suspenders: the human-readable message must also
+			// mention multi-document so CLI users get a clear answer.
+			if !strings.Contains(err.Error(), "multi-document") {
 				t.Fatalf("error should mention multi-document, got %v", err)
 			}
 		})

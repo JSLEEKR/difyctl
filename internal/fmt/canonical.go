@@ -131,6 +131,12 @@ func Format(src []byte) ([]byte, error) {
 	// with no fmt change required. Map well-known parse failures back to the
 	// existing fmt sentinels so callers using errors.Is keep working.
 	if vErr := parse.Validate(src); vErr != nil {
+		// Map well-known parse failures back to fmt sentinels. Prefer
+		// errors.Is (typed-error discrimination) where parse exposes a
+		// sentinel; fall back to substring match on yaml.v3's messages for
+		// the other shapes, where parse does not yet have a typed error.
+		// If/when parse grows typed errors for "empty", "not-mapping", and
+		// "duplicate", those branches should migrate to errors.Is too.
 		switch {
 		case errors.Is(vErr, parse.ErrMultiDoc):
 			return nil, ErrMultiDoc

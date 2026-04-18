@@ -11,6 +11,7 @@ package fmt_test
 // package fmt) keeps the import graph clean and exercises the public API.
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -161,6 +162,61 @@ func TestParity_KnownLinterErrorsKeepFmtSentinels(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.contains) {
 				t.Fatalf("want error containing %q, got %v", tc.contains, err)
+			}
+		})
+	}
+}
+
+// TestParity_SentinelErrorsUnwrapViaErrorsIs locks the stronger contract that
+// callers can use errors.Is on the fmt sentinel for every documented class.
+// Cycle L refactored input validation through parse.Validate, and the original
+// mapping table had a dead branch (`errors.Is(vErr, parse.ErrMultiDoc)` — which
+// is always false because parse wraps ErrParse via %w and formats ErrMultiDoc
+// via %v, so it is NOT in the error chain). The multi-doc case fell through to
+// the default branch, returning the raw parse error instead of the documented
+// fmt.ErrMultiDoc sentinel — a silent contract break invisible to the old
+// string-contains test. This test asserts the contract directly via errors.Is
+// so any future regression of the mapping is caught immediately.
+func TestParity_SentinelErrorsUnwrapViaErrorsIs(t *testing.T) {
+	cases := []struct {
+		name     string
+		src      string
+		sentinel error
+	}{
+		{
+			name:     "multi-doc",
+			src:      "app: {name: A, mode: workflow}\n---\napp: {name: B, mode: workflow}\n",
+			sentinel: difyfmt.ErrMultiDoc,
+		},
+		{
+			name:     "dup-key",
+			src:      "app:\n  name: A\n  name: B\n  mode: workflow\nkind: app\nversion: \"0.1\"\nworkflow: {graph: {nodes: [], edges: []}}\n",
+			sentinel: difyfmt.ErrDuplicateKeys,
+		},
+		{
+			name:     "non-mapping",
+			src:      "42\n",
+			sentinel: difyfmt.ErrNotMapping,
+		},
+		{
+			name:     "empty",
+			src:      "",
+			sentinel: difyfmt.ErrEmpty,
+		},
+		{
+			name:     "utf16-bom",
+			src:      string([]byte{0xFF, 0xFE, 0x61, 0x00}),
+			sentinel: difyfmt.ErrEncoding,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := difyfmt.Format([]byte(tc.src))
+			if err == nil {
+				t.Fatalf("want error for %q, got nil", tc.name)
+			}
+			if !errors.Is(err, tc.sentinel) {
+				t.Fatalf("errors.Is(err, %v) = false — callers using errors.Is on the documented sentinel are broken. Got err=%v (type %T)", tc.sentinel, err, err)
 			}
 		})
 	}

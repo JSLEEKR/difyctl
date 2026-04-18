@@ -75,7 +75,17 @@ func ParseBytes(b []byte) (*model.Workflow, error) {
 		return nil, fmt.Errorf("%w: empty document", ErrParse)
 	}
 	if IsMultiDoc(b) {
-		return nil, fmt.Errorf("%w: %v", ErrParse, ErrMultiDoc)
+		// Chain BOTH sentinels so callers can discriminate via errors.Is:
+		// errors.Is(err, ErrParse) — "is this a parse-layer failure?"
+		// errors.Is(err, ErrMultiDoc) — "is this specifically the multi-doc
+		// shape?" Prior to Cycle M, ErrMultiDoc was stringified via %v and
+		// was NOT in the error chain — the parse_test.go assertion silently
+		// depended on the strings.Contains fallback. fmt/canonical.go had the
+		// same bug: it tried errors.Is(vErr, parse.ErrMultiDoc) which was
+		// always false, so multi-doc input returned a raw parse error instead
+		// of fmt.ErrMultiDoc. Go 1.20+'s multi-%w restores the obvious
+		// contract.
+		return nil, fmt.Errorf("%w: %w", ErrParse, ErrMultiDoc)
 	}
 	var root yaml.Node
 	if err := yaml.Unmarshal(b, &root); err != nil {
