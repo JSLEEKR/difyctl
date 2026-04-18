@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -28,10 +29,16 @@ func runDiff(args []string, stdout, stderr io.Writer) (int, error) {
 
 	a, err := parse.LoadFile(fs.Arg(0))
 	if err != nil {
+		if *format == "json" {
+			emitDiffErrorJSON(stdout, err)
+		}
 		return 3, err
 	}
 	b, err := parse.LoadFile(fs.Arg(1))
 	if err != nil {
+		if *format == "json" {
+			emitDiffErrorJSON(stdout, err)
+		}
 		return 3, err
 	}
 
@@ -52,4 +59,14 @@ func runDiff(args []string, stdout, stderr io.Writer) (int, error) {
 		return 1, nil
 	}
 	return 0, nil
+}
+
+// emitDiffErrorJSON writes a single-element error envelope to stdout so that
+// callers parsing JSON output don't get empty input on IO/parse failure.
+func emitDiffErrorJSON(w io.Writer, err error) {
+	env, _ := json.MarshalIndent(map[string]any{
+		"error":   err.Error(),
+		"changes": []diff.Change{},
+	}, "", "  ")
+	fmt.Fprintln(w, string(env))
 }

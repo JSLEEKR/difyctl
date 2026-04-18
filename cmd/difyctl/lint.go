@@ -33,6 +33,17 @@ func runLint(args []string, stdout, stderr io.Writer) (int, error) {
 	path := fs.Arg(0)
 	wf, err := parse.LoadFile(path)
 	if err != nil {
+		// In JSON mode, emit a machine-readable error envelope on stdout so
+		// callers piping into jq / another parser never see empty input.
+		if *format == "json" {
+			env, _ := json.MarshalIndent(map[string]any{
+				"path":     path,
+				"error":    err.Error(),
+				"findings": []lint.Finding{},
+				"summary":  map[string]int{"error": 0, "warning": 0},
+			}, "", "  ")
+			fmt.Fprintln(stdout, string(env))
+		}
 		return 3, err
 	}
 

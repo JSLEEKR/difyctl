@@ -1,9 +1,11 @@
 package parse
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +108,53 @@ func TestParseBytes_NoPanicOnGarbage(t *testing.T) {
 			}
 		}()
 		_, _ = ParseBytes(in)
+	}
+}
+
+// TestLoadFile_ErrorMessageNotDuplicated guards against a regression where
+// the open error was double-wrapped, producing "io error: open X: open X: ...".
+func TestLoadFile_ErrorMessageNotDuplicated(t *testing.T) {
+	_, err := LoadFile("/nonexistent/definitely-not-here.yml")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	// Expect a single "open /...:" segment, not two.
+	if strings.Count(msg, "open ") > 1 {
+		t.Fatalf("error message contains 'open ' more than once (double-wrap): %q", msg)
+	}
+	if !errors.Is(err, ErrIO) {
+		t.Fatalf("expected ErrIO, got %v", err)
+	}
+}
+
+// TestLoadFile_TooLarge verifies that the MaxFileSize cap is enforced.
+func TestLoadFile_TooLarge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.yml")
+	// Write MaxFileSize+1 bytes of harmless content.
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fill with 'a' bytes (valid YAML scalar), just over the cap.
+	chunk := bytes.Repeat([]byte("a"), 1024)
+	for written := int64(0); written <= MaxFileSize; written += int64(len(chunk)) {
+		if _, werr := f.Write(chunk); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	if cerr := f.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	_, err = LoadFile(path)
+	if err == nil {
+		t.Fatal("expected oversize error, got nil")
+	}
+	if !errors.Is(err, ErrIO) {
+		t.Fatalf("expected ErrIO, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "cap") && !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error should mention cap/exceeds, got %q", err.Error())
 	}
 }

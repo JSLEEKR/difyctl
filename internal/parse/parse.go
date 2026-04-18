@@ -20,16 +20,32 @@ var ErrIO = errors.New("io error")
 // ErrParse signals malformed or unreadable YAML.
 var ErrParse = errors.New("parse error")
 
+// MaxFileSize caps how large a Dify DSL file may be. Hard-wired at 32 MiB —
+// well above any realistic real-world export (seen in the wild: ~50 KB) and
+// small enough that a hostile or corrupted file cannot OOM the linter.
+const MaxFileSize = 32 * 1024 * 1024
+
 // LoadFile reads and parses a workflow DSL at the given path.
+// Reads are capped at MaxFileSize so that a pathological input cannot OOM.
 func LoadFile(path string) (*model.Workflow, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("%w: open %s: %v", ErrIO, path, err)
+		// err is typically *fs.PathError whose Error() already contains
+		// "open <path>: <reason>". Don't re-print the path; just wrap.
+		return nil, fmt.Errorf("%w: %v", ErrIO, err)
 	}
 	defer f.Close()
-	b, err := io.ReadAll(f)
+	// Stat to reject obviously oversized files before any read.
+	if fi, statErr := f.Stat(); statErr == nil && fi.Size() > MaxFileSize {
+		return nil, fmt.Errorf("%w: %s: file is %d bytes, exceeds cap of %d", ErrIO, path, fi.Size(), MaxFileSize)
+	}
+	// Hard cap with LimitReader in case Stat was unreliable (pipes, special files).
+	b, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("%w: read %s: %v", ErrIO, path, err)
+	}
+	if int64(len(b)) > MaxFileSize {
+		return nil, fmt.Errorf("%w: %s: file exceeds %d-byte cap", ErrIO, path, MaxFileSize)
 	}
 	wf, err := ParseBytes(b)
 	if err != nil {

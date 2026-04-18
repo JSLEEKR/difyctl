@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,5 +243,57 @@ func TestExitCodeFor(t *testing.T) {
 	}
 	if exitCodeFor(newExitErr(2, os.ErrInvalid)) != 2 {
 		t.Fatal("exitErr preserved")
+	}
+}
+
+// TestRunLint_JSONErrorEnvelope ensures that lint --format=json still emits a
+// valid JSON document on stdout when the file cannot be opened or parsed.
+// Without this, a caller piping into jq silently breaks.
+func TestRunLint_JSONErrorEnvelope(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := runLint([]string{"--format", "json", "/nonexistent/file.yml"}, &stdout, &stderr)
+	if code != 3 || err == nil {
+		t.Fatalf("want (3, err), got (%d, %v)", code, err)
+	}
+	if stdout.Len() == 0 {
+		t.Fatal("stdout should contain a JSON error envelope")
+	}
+	var parsed map[string]any
+	if jerr := json.Unmarshal(stdout.Bytes(), &parsed); jerr != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", jerr, stdout.String())
+	}
+	if _, ok := parsed["error"]; !ok {
+		t.Fatalf("expected 'error' key in envelope, got %v", parsed)
+	}
+}
+
+// TestRunLint_JSONErrorEnvelope_MalformedYAML covers the parse-error branch.
+func TestRunLint_JSONErrorEnvelope_MalformedYAML(t *testing.T) {
+	path := writeTemp(t, "bad.yml", "not:\n  valid: : : yaml")
+	var stdout, stderr bytes.Buffer
+	code, err := runLint([]string{"--format", "json", path}, &stdout, &stderr)
+	if code != 3 || err == nil {
+		t.Fatalf("want (3, err), got (%d, %v)", code, err)
+	}
+	var parsed map[string]any
+	if jerr := json.Unmarshal(stdout.Bytes(), &parsed); jerr != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", jerr, stdout.String())
+	}
+}
+
+// TestRunDiff_JSONErrorEnvelope ensures diff --format=json emits valid JSON
+// even when a file cannot be opened.
+func TestRunDiff_JSONErrorEnvelope(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code, err := runDiff([]string{"--format", "json", "/nonexistent/a.yml", "/nonexistent/b.yml"}, &stdout, &stderr)
+	if code != 3 || err == nil {
+		t.Fatalf("want (3, err), got (%d, %v)", code, err)
+	}
+	var parsed map[string]any
+	if jerr := json.Unmarshal(stdout.Bytes(), &parsed); jerr != nil {
+		t.Fatalf("stdout not valid JSON on diff error: %v\n%s", jerr, stdout.String())
+	}
+	if _, ok := parsed["error"]; !ok {
+		t.Fatalf("expected 'error' key, got %v", parsed)
 	}
 }
