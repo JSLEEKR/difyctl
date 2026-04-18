@@ -134,6 +134,34 @@ func TestFormat_NullDocumentRejected(t *testing.T) {
 	}
 }
 
+// TestFormat_NonUTF8BOMRejected is the Cycle E regression: yaml.v3 does not
+// decode UTF-16/UTF-32 input — it silently slurps the ASCII subset and returns
+// a bogus document. Before the fix, `fmt -w` on a UTF-16 file would overwrite
+// the file with the ASCII-stripped remainder (e.g. UTF-16 LE bytes
+// \xff\xfe a\x00 p\x00 p\x00 became the literal three bytes "app\n"). We now
+// detect UTF-16/UTF-32 BOMs up-front and refuse.
+func TestFormat_NonUTF8BOMRejected(t *testing.T) {
+	cases := map[string][]byte{
+		"UTF-16 LE": {0xFF, 0xFE, 'a', 0x00, 'p', 0x00, 'p', 0x00},
+		"UTF-16 BE": {0xFE, 0xFF, 0x00, 'a', 0x00, 'p', 0x00, 'p'},
+		"UTF-32 LE": {0xFF, 0xFE, 0x00, 0x00, 'a', 0x00, 0x00, 0x00},
+		"UTF-32 BE": {0x00, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 'a'},
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Format(src)
+			if err == nil {
+				t.Fatal("want ErrEncoding, got nil — fmt would silently corrupt the file")
+			}
+		})
+	}
+	// UTF-8 BOM + valid content must still work.
+	utf8Valid := append([]byte{0xEF, 0xBB, 0xBF}, []byte("app: {name: X, mode: workflow}\n")...)
+	if _, err := Format(utf8Valid); err != nil {
+		t.Fatalf("UTF-8 BOM + valid content must work, got: %v", err)
+	}
+}
+
 // TestFormat_CommentOnlyRejected is the Cycle D regression: a file that is
 // only YAML comments (`# nothing here`) previously slipped past the Cycle C
 // guards because yaml.v3 parses it to a DocumentNode with zero content, the

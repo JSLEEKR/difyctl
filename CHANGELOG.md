@@ -2,12 +2,17 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] — 2026-04-19 (Cycle C hardening)
+## [1.0.1] — 2026-04-19 (Cycle C / D / E hardening)
 
 ### Changed
 - `diff --format json` now emits a uniform `{changes: [...], error: null | "..."}` envelope on BOTH success and error paths. Previously success emitted a bare JSON array while error emitted an object, so `jq` filters like `.changes[]` could not unify the two without branching on exit code. Consumers that parsed `.changes[]` already keep working; consumers that assumed a top-level array must switch to `.changes[]`.
+- `lint --format json` envelope now always includes `"error": null` on success, mirroring the diff envelope. `jq` filters that branch on `.error` behave uniformly across success and IO/parse-error paths. `findings` is always a JSON array (never `null`), so `.findings[]` cannot explode with "Cannot iterate over null".
+- `DIFY006` (duplicate-node-id) now reports the first-defined source line: `duplicate node id 'llm-1' (first defined at line 14)`. Makes renames and copy-paste bugs easier to locate.
+- `DIFY013` (unresolved-var-ref) now dedupes on `(referrer, target, var)` — a single node mentioning `{{#ghost.q#}}` N times yields one finding, not N.
 
 ### Fixed
+- `fmt` no longer corrupts UTF-16 / UTF-32 input. yaml.v3 silently ASCII-strips such files and returns a bogus scalar; `fmt -w` would then rewrite the file with the stripped bytes (catastrophic data loss). We now detect the four common non-UTF-8 BOMs (UTF-16 LE/BE, UTF-32 LE/BE) up-front and error out. UTF-8 BOM (EF BB BF) continues to work.
+- `fmt` on a file that is only YAML comments (e.g. `# nothing here\n`) now errors out instead of silently clobbering the file with the literal string `null\n`. Previously slipped past the Cycle C guards because yaml.v3 parses comment-only input to a DocumentNode with zero content.
 - `fmt -w link.yml` on a symlink no longer replaces the symlink with a regular file. We now `EvalSymlinks` to resolve the target, then atomically rename over the TARGET — the symlink stays a symlink, just pointing at the newly-rewritten bytes.
 - `fmt` on an empty or whitespace-only document now errors out (`format: empty document`) instead of silently clobbering the file with the literal string `null\n`. Likewise for inputs that decode to a bare null scalar (`~`, `null`).
 

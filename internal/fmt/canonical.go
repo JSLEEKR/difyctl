@@ -23,9 +23,24 @@ import (
 // rejects empty documents.
 var ErrEmpty = errors.New("format: empty document")
 
+// ErrEncoding is returned when Format detects a byte-order-mark for a YAML
+// encoding other than UTF-8. yaml.v3 does not actually decode UTF-16 / UTF-32
+// bytes — it happily slurps the ASCII subset and returns a bogus document.
+// If we then `fmt -w`, we would silently overwrite the user's UTF-16 file
+// with the ASCII-stripped remainder — catastrophic data loss. Detect the
+// common BOMs up-front and refuse.
+var ErrEncoding = errors.New("format: non-UTF-8 input detected (yaml.v3 only decodes UTF-8)")
+
 // Format parses src YAML and returns canonically ordered YAML bytes. Unknown
 // keys keep their original relative order after the ranked keys.
 func Format(src []byte) ([]byte, error) {
+	// Reject UTF-16 / UTF-32 BOMs BEFORE yaml.Unmarshal. yaml.v3 silently
+	// ASCII-strips such input and returns a misleading scalar node, which
+	// would cause `fmt -w` to overwrite the user's file with the stripped
+	// remainder. A UTF-8 BOM (EF BB BF) is fine — yaml.v3 handles it.
+	if hasNonUTF8BOM(src) {
+		return nil, ErrEncoding
+	}
 	if len(bytes.TrimSpace(src)) == 0 {
 		return nil, ErrEmpty
 	}
@@ -253,6 +268,28 @@ func mapStringField(m *yaml.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+// hasNonUTF8BOM reports whether src starts with a UTF-16 or UTF-32 BOM. The
+// UTF-8 BOM (EF BB BF) is accepted — yaml.v3 handles it natively.
+func hasNonUTF8BOM(src []byte) bool {
+	// UTF-32 BE: 00 00 FE FF
+	if len(src) >= 4 && src[0] == 0x00 && src[1] == 0x00 && src[2] == 0xFE && src[3] == 0xFF {
+		return true
+	}
+	// UTF-32 LE: FF FE 00 00
+	if len(src) >= 4 && src[0] == 0xFF && src[1] == 0xFE && src[2] == 0x00 && src[3] == 0x00 {
+		return true
+	}
+	// UTF-16 BE: FE FF
+	if len(src) >= 2 && src[0] == 0xFE && src[1] == 0xFF {
+		return true
+	}
+	// UTF-16 LE: FF FE  (check AFTER UTF-32 LE since they overlap in prefix)
+	if len(src) >= 2 && src[0] == 0xFF && src[1] == 0xFE {
+		return true
+	}
+	return false
 }
 
 func findSeq(root *yaml.Node, path []string) *yaml.Node {
