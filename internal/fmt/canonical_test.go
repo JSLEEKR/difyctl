@@ -181,6 +181,27 @@ func TestFormat_CommentOnlyRejected(t *testing.T) {
 	}
 }
 
+// TestFormat_NonMappingRootRejected is Cycle G's parity fix. parse.ParseBytes
+// (which backs lint and diff) rejects non-mapping roots with "root must be a
+// mapping". Before Cycle G, Format happily re-emitted `42\n` on input `42`
+// (or `- a\n- b\n` for a top-level sequence). Users running lint then fmt on
+// the same file would see lint exit 3 but `fmt -w` quietly "succeed" and
+// rewrite the file in place. Now fmt agrees with lint/diff.
+func TestFormat_NonMappingRootRejected(t *testing.T) {
+	for _, src := range []string{
+		"42\n",       // bare integer scalar
+		"true\n",     // bare bool scalar
+		"foo\n",      // bare string scalar
+		"- a\n- b\n", // top-level sequence
+		"[1, 2, 3]\n",
+	} {
+		out, err := Format([]byte(src))
+		if err == nil {
+			t.Fatalf("want error for non-mapping root %q, got bytes: %q", src, out)
+		}
+	}
+}
+
 func TestFormat_AppBlockKeyOrder(t *testing.T) {
 	out, err := Format([]byte(scrambled))
 	if err != nil {

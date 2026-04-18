@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/JSLEEKR/difyctl/internal/fileio"
 	dfmt "github.com/JSLEEKR/difyctl/internal/fmt"
-	"github.com/JSLEEKR/difyctl/internal/parse"
 )
 
 // runFmt implements `difyctl fmt`.
@@ -24,7 +24,7 @@ func runFmt(args []string, stdout, stderr io.Writer) (int, error) {
 		return 2, fmt.Errorf("fmt requires exactly one file argument")
 	}
 	path := fs.Arg(0)
-	src, err := readFileCapped(path, parse.MaxFileSize)
+	src, err := fileio.ReadCapped(path)
 	if err != nil {
 		return 3, err
 	}
@@ -42,35 +42,6 @@ func runFmt(args []string, stdout, stderr io.Writer) (int, error) {
 		return 1, err
 	}
 	return 0, nil
-}
-
-// readFileCapped reads up to limit+1 bytes from path and errors if the file
-// exceeds the cap. Mirrors the Cycle A protection in parse.LoadFile so that
-// `fmt -w` on a hostile 40 MiB file cannot OOM the process; without this,
-// `difyctl fmt` was the last unguarded read path in the CLI.
-func readFileCapped(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if fi, statErr := f.Stat(); statErr == nil {
-		if fi.IsDir() {
-			return nil, fmt.Errorf("read %s: is a directory", path)
-		}
-		if fi.Size() > limit {
-			return nil, fmt.Errorf("read %s: file is %d bytes, exceeds cap of %d", path, fi.Size(), limit)
-		}
-	}
-	// Hard cap with LimitReader in case Stat was unreliable (pipes, special files).
-	b, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %v", path, err)
-	}
-	if int64(len(b)) > limit {
-		return nil, fmt.Errorf("read %s: file exceeds %d-byte cap", path, limit)
-	}
-	return b, nil
 }
 
 // writeFileAtomic writes data to path via a temp file + rename, preserving the

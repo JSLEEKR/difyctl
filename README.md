@@ -3,7 +3,7 @@
 [![Go](https://img.shields.io/badge/go-1.22+-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge)](./LICENSE)
 [![Status](https://img.shields.io/badge/status-v1.0.0-brightgreen?style=for-the-badge)](./CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-156_passing-success?style=for-the-badge)](#testing)
+[![Tests](https://img.shields.io/badge/tests-192_passing-success?style=for-the-badge)](#testing)
 [![Rules](https://img.shields.io/badge/lint_rules-20-blue?style=for-the-badge)](#rule-catalog)
 [![Build](https://img.shields.io/badge/build-go_build_clean-success?style=for-the-badge)](#building)
 
@@ -392,6 +392,31 @@ High-level notes:
 - **Iterative DFS** for cycle detection. The 305-commits-per-week upstream repo could ship a 10k-node workflow and we still don't stack-overflow.
 - **Generator ≠ Evaluator.** This package was built in Phase 2 of the daily-challenge pipeline and will be audited by an independent evaluator in Phase 3.
 
+### Cross-command parity
+
+`lint`, `diff`, and `fmt` all funnel reads through `internal/fileio.ReadCapped` so a new input guard only has to be written once. This matters because previous cycles repeatedly hit the same cascade bug: a check landed in one subcommand and silently skipped another, corrupting user files.
+
+| Behaviour                                      | lint | diff | fmt |
+| ---------------------------------------------- | :--: | :--: | :-: |
+| 32 MiB file-size cap                           |  ✓   |  ✓   |  ✓  |
+| Reject directories (exit 3, clean message)     |  ✓   |  ✓   |  ✓  |
+| Reject UTF-16 / UTF-32 BOM (no data loss)      |  ✓   |  ✓   |  ✓  |
+| Reject empty document                          |  ✓   |  ✓   |  ✓  |
+| Reject comment-only document                   |  ✓   |  ✓   |  ✓  |
+| Reject null scalar root (`~`, `null`)          |  ✓   |  ✓   |  ✓  |
+| Reject non-mapping root (`42`, `true`, `- a`)  |  ✓   |  ✓   |  ✓  |
+| Follow symlinks (read)                         |  ✓   |  ✓   |  ✓  |
+| `fmt -w` preserves symlink shape + target mode |  —   |  —   |  ✓  |
+| `--format json` error envelope                 |  ✓   |  ✓   |  —  |
+| Multi-arg input                                |  ✗   |  n/a |  ✗  |
+| Stdin input (`-`)                              |  ✗   |  n/a |  ✗  |
+
+**Known asymmetries**:
+
+- `fmt` has no `--format json` flag. Its output IS the file; an envelope would defeat the purpose. Lint/diff need the envelope so CI pipelines piping into `jq` never see empty stdout on failure.
+- `fmt` normalises CRLF → LF line endings (yaml.v3 handles this internally). If you need CRLF preserved, do not use `fmt -w` — lint and diff do not touch the file.
+- Multi-argument input is not yet supported on any subcommand; use a shell loop or `find … -exec` for now. Adding `lint file1 file2 …` is tracked for v1.1.
+
 ---
 
 ## Building
@@ -424,6 +449,7 @@ GOOS=windows GOARCH=amd64  go build -o dist/difyctl-windows-amd64.exe ./cmd/dify
 $ go test ./...
 ok   github.com/JSLEEKR/difyctl/cmd/difyctl         0.016s
 ok   github.com/JSLEEKR/difyctl/internal/diff       0.005s
+ok   github.com/JSLEEKR/difyctl/internal/fileio     0.005s
 ok   github.com/JSLEEKR/difyctl/internal/fmt        0.004s
 ok   github.com/JSLEEKR/difyctl/internal/lint       0.023s
 ok   github.com/JSLEEKR/difyctl/internal/model      0.003s
@@ -431,7 +457,7 @@ ok   github.com/JSLEEKR/difyctl/internal/parse      0.004s
 ok   github.com/JSLEEKR/difyctl/internal/varref     0.002s
 ```
 
-- **156 tests** across 7 packages.
+- **192 tests** across 8 packages.
 - Rule tests are table-driven — one test file per rule, each exercising the happy path and at least one failure case.
 - `internal/fmt` has an idempotence test (`fmt(fmt(x)) == fmt(x)`) that will catch ANY accidental key re-ordering drift.
 - `internal/parse` has a "no-panic on garbage bytes" test covering binary noise and malformed YAML.

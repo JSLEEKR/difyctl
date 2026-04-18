@@ -2,7 +2,15 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] — 2026-04-19 (Cycle C / D / E / F hardening)
+## [1.0.1] — 2026-04-19 (Cycle C / D / E / F / G hardening)
+
+### Fixed (Cycle G — cross-command parity cascade fix)
+- **HIGH: `lint` and `diff` now refuse UTF-16 / UTF-32 BOM input.** Cycle E fixed the same class of bug in `fmt` (yaml.v3 silently ASCII-strips non-UTF-8 input), but the identical decoder backs `lint` and `diff`. Both commands were happily running rules against the ASCII subset of a UTF-16 file and reporting confident garbage. All three subcommands now route file reads through `internal/fileio.ReadCapped` so future input guards land in one place.
+- **MED: `fmt` now rejects non-mapping document roots** (`42`, `true`, `foo`, top-level sequences `- a\n- b`) with `format: root must be a mapping`. `lint` and `diff` already rejected such input via `parse.ParseBytes`; before the fix, a user running `difyctl fmt -w file.yml` on a file that lint/diff rejected could silently get the file "formatted" in place. Now all three agree.
+- **LOW: Cleaned up double-wrapped IO error messages.** Previously a directory argument to `lint`/`diff` produced `io error: read /tmp/x: read /tmp/x: is a directory`; now it is `io error: /tmp/x: is a directory`, matching the Cycle A intent for the "open" branch.
+
+### Refactor (Cycle G)
+- Extracted `internal/fileio` package. All file reads (`MaxFileSize`, directory rejection, BOM detection) live here. `parse.LoadFile`, `cmd/difyctl/fmt.go`, and `internal/fmt.Format` delegate to it. Prevents the recurring "feature X added to subcommand Y but not Z" cascade that Cycles A (lint cap), F (fmt cap), and G (BOM in lint/diff) all had to patch separately.
 
 ### Fixed (Cycle F)
 - `fmt` now enforces the 32 MiB file-size cap that Cycle A added to `lint`/`diff`. Previously `difyctl fmt` used `os.ReadFile` directly, which happily slurped files of arbitrary size — a hostile 40 MiB YAML would OOM the process. The cap now applies to all three subcommands uniformly.

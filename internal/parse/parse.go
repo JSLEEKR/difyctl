@@ -2,14 +2,17 @@
 //
 // It retains the yaml.Node tree so downstream code can report line numbers.
 // Malformed input returns a structured error — never panics.
+//
+// All file I/O (size cap, directory rejection, non-UTF-8 BOM rejection) is
+// delegated to internal/fileio so that lint, diff, and fmt agree byte-for-byte
+// on what they accept. See internal/fileio/fileio.go for the rationale.
 package parse
 
 import (
 	"errors"
 	"fmt"
-	"io"
-	"os"
 
+	"github.com/JSLEEKR/difyctl/internal/fileio"
 	"github.com/JSLEEKR/difyctl/internal/model"
 	"gopkg.in/yaml.v3"
 )
@@ -20,32 +23,17 @@ var ErrIO = errors.New("io error")
 // ErrParse signals malformed or unreadable YAML.
 var ErrParse = errors.New("parse error")
 
-// MaxFileSize caps how large a Dify DSL file may be. Hard-wired at 32 MiB —
-// well above any realistic real-world export (seen in the wild: ~50 KB) and
-// small enough that a hostile or corrupted file cannot OOM the linter.
-const MaxFileSize = 32 * 1024 * 1024
+// MaxFileSize re-exports fileio.MaxFileSize so existing callers and tests keep
+// working. The authoritative value lives in internal/fileio.
+const MaxFileSize = fileio.MaxFileSize
 
 // LoadFile reads and parses a workflow DSL at the given path.
-// Reads are capped at MaxFileSize so that a pathological input cannot OOM.
+// Reads are capped at MaxFileSize (32 MiB), directories are rejected, and
+// UTF-16/UTF-32 byte-order marks are refused — see internal/fileio.
 func LoadFile(path string) (*model.Workflow, error) {
-	f, err := os.Open(path)
+	b, err := fileio.ReadCapped(path)
 	if err != nil {
-		// err is typically *fs.PathError whose Error() already contains
-		// "open <path>: <reason>". Don't re-print the path; just wrap.
 		return nil, fmt.Errorf("%w: %v", ErrIO, err)
-	}
-	defer f.Close()
-	// Stat to reject obviously oversized files before any read.
-	if fi, statErr := f.Stat(); statErr == nil && fi.Size() > MaxFileSize {
-		return nil, fmt.Errorf("%w: %s: file is %d bytes, exceeds cap of %d", ErrIO, path, fi.Size(), MaxFileSize)
-	}
-	// Hard cap with LimitReader in case Stat was unreliable (pipes, special files).
-	b, err := io.ReadAll(io.LimitReader(f, MaxFileSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("%w: read %s: %v", ErrIO, path, err)
-	}
-	if int64(len(b)) > MaxFileSize {
-		return nil, fmt.Errorf("%w: %s: file exceeds %d-byte cap", ErrIO, path, MaxFileSize)
 	}
 	wf, err := ParseBytes(b)
 	if err != nil {

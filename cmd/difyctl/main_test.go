@@ -533,13 +533,204 @@ func TestRunFmt_FileSizeCap(t *testing.T) {
 
 // TestRunFmt_DirectoryRejected guards that passing a directory yields a clean
 // IO error (exit 3) rather than a confusing yaml.Unmarshal failure. os.Open of
-// a directory succeeds on Unix; the readFileCapped helper must catch the
-// IsDir case before io.ReadAll happily slurps the directory entries.
+// a directory succeeds on Unix; fileio.ReadCapped must catch the IsDir case
+// before io.ReadAll happily slurps the directory entries.
 func TestRunFmt_DirectoryRejected(t *testing.T) {
 	dir := t.TempDir()
 	var stdout, stderr bytes.Buffer
 	code, err := runFmt([]string{dir}, &stdout, &stderr)
 	if code != 3 || err == nil {
 		t.Fatalf("want (3, err) for directory arg, got (%d, %v)", code, err)
+	}
+}
+
+// --- Cycle G regressions: cross-command parity ----------------------------
+
+// TestCrossCommand_DirectoryRejected is the Cycle G parity test. Before Cycle
+// G, `fmt` rejected directories cleanly (Cycle F fix) but `lint` and `diff`
+// — which went through parse.LoadFile and then io.ReadAll — returned a
+// double-wrapped "io error: read X: read X: is a directory". Worse, they
+// sometimes slipped past and fed directory-listing bytes to yaml.v3 which
+// returned an opaque "incompatible YAML document". All three subcommands must
+// now refuse directories at the same layer (fileio.ReadCapped) and emit a
+// single clean "<path>: is a directory" suffix.
+func TestCrossCommand_DirectoryRejected(t *testing.T) {
+	dir := t.TempDir()
+	good := writeTemp(t, "g.yml", good)
+	for _, tc := range []struct {
+		name string
+		run  func() (int, error)
+	}{
+		{"lint", func() (int, error) {
+			var so, se bytes.Buffer
+			return runLint([]string{dir}, &so, &se)
+		}},
+		{"diff-first-arg", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{dir, good}, &so, &se)
+		}},
+		{"diff-second-arg", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{good, dir}, &so, &se)
+		}},
+		{"fmt", func() (int, error) {
+			var so, se bytes.Buffer
+			return runFmt([]string{dir}, &so, &se)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, err := tc.run()
+			if code != 3 || err == nil {
+				t.Fatalf("want (3, err), got (%d, %v)", code, err)
+			}
+			if !strings.Contains(err.Error(), "is a directory") {
+				t.Fatalf("%s: error should contain 'is a directory', got: %v", tc.name, err)
+			}
+			// No double-wrap: the message must contain "is a directory" only once.
+			if strings.Count(err.Error(), "is a directory") > 1 {
+				t.Fatalf("%s: double-wrapped message: %v", tc.name, err)
+			}
+			// Similarly the path must not appear twice (regression for the
+			// "read X: read X: ..." double-wrap).
+			if strings.Count(err.Error(), "read ") > 1 {
+				t.Fatalf("%s: 'read ' appears multiple times (double-wrap): %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestCrossCommand_UTF16BOMRejected is the core Cycle G cascade test. Cycle E
+// made `fmt` refuse UTF-16/UTF-32 input (because yaml.v3 silently ASCII-strips
+// such bytes and `fmt -w` would clobber the file with the remainder). But the
+// same decoder backs lint and diff: both would happily run rules over the
+// mangled ASCII subset, reporting nonsense. After Cycle G's fileio extraction
+// all three refuse at the read layer.
+func TestCrossCommand_UTF16BOMRejected(t *testing.T) {
+	dir := t.TempDir()
+	// UTF-16 LE BOM + a few ASCII-encoded chars.
+	bom := []byte{0xFF, 0xFE, 'a', 0x00, 'p', 0x00, 'p', 0x00, ':', 0x00, '\n', 0x00}
+	bomPath := filepath.Join(dir, "bom.yml")
+	if err := os.WriteFile(bomPath, bom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	goodPath := writeTemp(t, "g.yml", good)
+
+	for _, tc := range []struct {
+		name string
+		run  func() (int, error)
+	}{
+		{"lint", func() (int, error) {
+			var so, se bytes.Buffer
+			return runLint([]string{bomPath}, &so, &se)
+		}},
+		{"diff-first-arg", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{bomPath, goodPath}, &so, &se)
+		}},
+		{"diff-second-arg", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{goodPath, bomPath}, &so, &se)
+		}},
+		{"fmt", func() (int, error) {
+			var so, se bytes.Buffer
+			return runFmt([]string{bomPath}, &so, &se)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, err := tc.run()
+			if code != 3 || err == nil {
+				t.Fatalf("want (3, err) for UTF-16 input, got (%d, %v)", code, err)
+			}
+			if !strings.Contains(err.Error(), "UTF-8") && !strings.Contains(err.Error(), "non-UTF-8") {
+				t.Fatalf("%s: error should mention encoding, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestCrossCommand_OversizeRejected asserts that the 32 MiB cap applies
+// uniformly. Cycle F added the cap to fmt; this locks that lint and diff also
+// use the same limit so future guards land in one place.
+func TestCrossCommand_OversizeRejected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates ~32 MiB")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "big.yml")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := bytes.Repeat([]byte("a"), 1024)
+	for written := int64(0); written <= 32*1024*1024; written += int64(len(chunk)) {
+		if _, werr := f.Write(chunk); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	_ = f.Close()
+	goodPath := writeTemp(t, "g.yml", good)
+	for _, tc := range []struct {
+		name string
+		run  func() (int, error)
+	}{
+		{"lint", func() (int, error) {
+			var so, se bytes.Buffer
+			return runLint([]string{p}, &so, &se)
+		}},
+		{"diff", func() (int, error) {
+			var so, se bytes.Buffer
+			return runDiff([]string{p, goodPath}, &so, &se)
+		}},
+		{"fmt", func() (int, error) {
+			var so, se bytes.Buffer
+			return runFmt([]string{p}, &so, &se)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, err := tc.run()
+			if code != 3 || err == nil {
+				t.Fatalf("want (3, err) for oversize input, got (%d, %v)", code, err)
+			}
+			if !strings.Contains(err.Error(), "cap") && !strings.Contains(err.Error(), "exceeds") {
+				t.Fatalf("%s: expected cap/exceeds in error, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestCrossCommand_BareScalarRejected is Cycle G's answer to the Cycle F
+// open question (b): `fmt` used to happily serialise `42\n` for input `42`
+// while lint/diff rejected the same input with "root must be a mapping".
+// The new ErrNotMapping in internal/fmt closes that gap.
+func TestCrossCommand_BareScalarRejected(t *testing.T) {
+	dir := t.TempDir()
+	for _, src := range []string{"42\n", "true\n", "foo\n", "- a\n- b\n"} {
+		p := filepath.Join(dir, "s.yml")
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		goodPath := writeTemp(t, "g.yml", good)
+		// All three must reject.
+		{
+			var so, se bytes.Buffer
+			code, err := runLint([]string{p}, &so, &se)
+			if code != 3 || err == nil {
+				t.Fatalf("lint %q: want (3, err), got (%d, %v)", src, code, err)
+			}
+		}
+		{
+			var so, se bytes.Buffer
+			code, err := runDiff([]string{p, goodPath}, &so, &se)
+			if code != 3 || err == nil {
+				t.Fatalf("diff %q: want (3, err), got (%d, %v)", src, code, err)
+			}
+		}
+		{
+			var so, se bytes.Buffer
+			code, err := runFmt([]string{p}, &so, &se)
+			if code != 3 || err == nil {
+				t.Fatalf("fmt %q: want (3, err), got (%d, %v)", src, code, err)
+			}
+		}
 	}
 }
