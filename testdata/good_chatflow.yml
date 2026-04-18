@@ -1,0 +1,38 @@
+app:
+  name: Chat Demo
+  mode: chatflow
+  description: "Answer-node based chatflow."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+          variables:
+            - variable: query
+              type: string
+      - id: llm-1
+        type: llm
+        data:
+          title: Reply
+          model:
+            provider: openai
+            name: gpt-4o-mini
+          prompt_template:
+            - role: user
+              text: "You said: {{#start-1.query#}}"
+      - id: answer-1
+        type: answer
+        data:
+          title: Answer
+          answer: "{{#llm-1.text#}}"
+    edges:
+      - id: e-1
+        source: start-1
+        target: llm-1
+      - id: e-2
+        source: llm-1
+        target: answer-1

@@ -1,0 +1,50 @@
+app:
+  name: Iteration Example
+  mode: workflow
+  description: "Iterate over a list, transforming each item."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+          variables:
+            - variable: items
+              type: array
+      - id: iter-1
+        type: iteration
+        data:
+          title: Iterate
+          iterator_selector:
+            - start-1
+            - items
+          outputs:
+            - output
+      - id: iter-1-start
+        type: iteration-start
+        data:
+          title: Iter Start
+          parent_id: iter-1
+      - id: iter-1-body
+        type: template-transform
+        data:
+          title: Transform
+          parent_id: iter-1
+          template: "{{#iter-1-start.item#}}"
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e-1
+        source: start-1
+        target: iter-1
+      - id: e-2
+        source: iter-1-start
+        target: iter-1-body
+      - id: e-3
+        source: iter-1
+        target: end-1

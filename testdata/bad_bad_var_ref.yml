@@ -1,0 +1,37 @@
+app:
+  name: Broken Var Ref
+  mode: workflow
+  description: "LLM references a variable from a non-existent node."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+          variables:
+            - variable: query
+              type: string
+      - id: llm-1
+        type: llm
+        data:
+          title: Gen
+          model:
+            provider: openai
+            name: gpt-4
+          prompt_template:
+            - role: user
+              text: "Answer: {{#ghost.question#}}"
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e-1
+        source: start-1
+        target: llm-1
+      - id: e-2
+        source: llm-1
+        target: end-1

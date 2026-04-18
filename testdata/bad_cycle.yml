@@ -1,0 +1,44 @@
+app:
+  name: Cycle Demo
+  mode: workflow
+  description: "llm-1 -> llm-2 -> llm-1 forms a forbidden cycle."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+      - id: llm-1
+        type: llm
+        data:
+          title: First
+          model:
+            provider: openai
+            name: gpt-4
+      - id: llm-2
+        type: llm
+        data:
+          title: Second
+          model:
+            provider: openai
+            name: gpt-4
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e1
+        source: start-1
+        target: llm-1
+      - id: e2
+        source: llm-1
+        target: llm-2
+      - id: e3
+        source: llm-2
+        target: llm-1
+      - id: e4
+        source: llm-2
+        target: end-1

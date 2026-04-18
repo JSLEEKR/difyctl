@@ -1,0 +1,28 @@
+app:
+  name: Unknown Type
+  mode: workflow
+  description: "Node has unknown type."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+      - id: magic-1
+        type: magic-box
+        data:
+          title: Mystery
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e-1
+        source: start-1
+        target: magic-1
+      - id: e-2
+        source: magic-1
+        target: end-1

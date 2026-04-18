@@ -1,0 +1,50 @@
+app:
+  name: Two-step Chain
+  mode: workflow
+  description: "Query rewriter -> answer generator."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+          variables:
+            - variable: query
+              type: string
+      - id: rewrite
+        type: llm
+        data:
+          title: Rewrite
+          model:
+            provider: openai
+            name: gpt-4o-mini
+          prompt_template:
+            - role: user
+              text: "Rewrite: {{#start-1.query#}}"
+      - id: answer
+        type: llm
+        data:
+          title: Answer
+          model:
+            provider: anthropic
+            name: claude-3-5-sonnet
+          prompt_template:
+            - role: user
+              text: "Use the rewritten query: {{#rewrite.text#}}"
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e1
+        source: start-1
+        target: rewrite
+      - id: e2
+        source: rewrite
+        target: answer
+      - id: e3
+        source: answer
+        target: end-1

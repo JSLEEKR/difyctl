@@ -1,0 +1,34 @@
+app:
+  name: Dangling Edge
+  mode: workflow
+  description: "Edge target does not exist."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+      - id: llm-1
+        type: llm
+        data:
+          title: Gen
+          model:
+            provider: openai
+            name: gpt-4
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e-1
+        source: start-1
+        target: llm-1
+      - id: e-2
+        source: llm-1
+        target: end-1
+      - id: e-3
+        source: llm-1
+        target: does-not-exist

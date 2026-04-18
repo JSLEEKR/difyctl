@@ -1,0 +1,51 @@
+app:
+  name: Basic Demo
+  mode: workflow
+  description: "Simple start->llm->end."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+          variables:
+            - variable: query
+              type: string
+        position:
+          x: 0
+          y: 0
+      - id: llm-1
+        type: llm
+        data:
+          title: Generate
+          model:
+            provider: openai
+            name: gpt-4
+          prompt_template:
+            - role: user
+              text: "Please answer {{#start-1.query#}}"
+        position:
+          x: 200
+          y: 0
+      - id: end-1
+        type: end
+        data:
+          title: End
+          outputs:
+            - variable: answer
+              value_selector:
+                - llm-1
+                - text
+        position:
+          x: 400
+          y: 0
+    edges:
+      - id: e-1
+        source: start-1
+        target: llm-1
+      - id: e-2
+        source: llm-1
+        target: end-1

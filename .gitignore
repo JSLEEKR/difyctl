@@ -1,0 +1,7 @@
+/difyctl
+/difyctl.exe
+/dist/
+*.test
+*.out
+.idea/
+.vscode/

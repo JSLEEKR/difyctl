@@ -1,0 +1,38 @@
+app:
+  name: Duplicate IDs
+  mode: workflow
+  description: "Two nodes share the same id."
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - id: start-1
+        type: start
+        data:
+          title: Start
+      - id: llm-1
+        type: llm
+        data:
+          title: First
+          model:
+            provider: openai
+            name: gpt-4
+      - id: llm-1
+        type: llm
+        data:
+          title: Second
+          model:
+            provider: openai
+            name: gpt-4
+      - id: end-1
+        type: end
+        data:
+          title: End
+    edges:
+      - id: e-1
+        source: start-1
+        target: llm-1
+      - id: e-2
+        source: llm-1
+        target: end-1
