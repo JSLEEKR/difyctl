@@ -236,6 +236,42 @@ workflow: {graph: {nodes: [], edges: []}}
 	}
 }
 
+// TestFormat_NodesSortedWithEmptyID is the Cycle F regression. The previous
+// sort-Less for nodes fell back to "orig-index" whenever EITHER side had an
+// empty id, which is non-transitive and silently left nodes unsorted for
+// inputs like [c, "", a, b]. The expected behaviour: id'd nodes sort
+// alphabetically, empty-id nodes (DIFY005 will flag them) appear after and
+// keep their relative insertion order.
+func TestFormat_NodesSortedWithEmptyID(t *testing.T) {
+	input := `app: {name: X, mode: workflow}
+kind: app
+version: "0.1"
+workflow:
+  graph:
+    nodes:
+      - {id: c, type: llm, data: {title: C, model: {provider: o, name: g}}}
+      - {type: end, data: {title: empty1}}
+      - {id: a, type: start, data: {title: A}}
+      - {id: b, type: llm, data: {title: B, model: {provider: o, name: g}}}
+    edges: []
+`
+	out, err := Format([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	iA := strings.Index(s, "id: a")
+	iB := strings.Index(s, "id: b")
+	iC := strings.Index(s, "id: c")
+	iEmpty := strings.Index(s, "title: empty1")
+	if !(iA > 0 && iB > iA && iC > iB) {
+		t.Fatalf("id-bearing nodes not sorted a<b<c: a=%d b=%d c=%d\n%s", iA, iB, iC, s)
+	}
+	if !(iEmpty > iC) {
+		t.Fatalf("empty-id node must appear after all id'd nodes: c=%d empty=%d\n%s", iC, iEmpty, s)
+	}
+}
+
 func TestFormat_DataAlphabeticalExceptTitle(t *testing.T) {
 	input := `app: {name: X, mode: workflow, description: ""}
 kind: app

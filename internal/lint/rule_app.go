@@ -3,6 +3,14 @@ package lint
 import "github.com/JSLEEKR/difyctl/internal/model"
 
 // DIFY001 — missing-app: the top-level `app` block must exist.
+//
+// This rule fires ONLY when every documented app field (name, mode,
+// description) decodes empty — i.e. the block is missing entirely or was
+// decoded but yielded zero populated fields. Partial populations (e.g. name
+// set but mode empty) are intentionally left to the stricter DIFY002
+// (unknown-app-mode) because `mode` is the semantically critical field and
+// DIFY002 already fires when it is empty or invalid. This keeps DIFY001's
+// purpose narrow ("the whole block is missing") and avoids double-reporting.
 type ruleMissingApp struct{}
 
 func (ruleMissingApp) ID() string { return "DIFY001" }

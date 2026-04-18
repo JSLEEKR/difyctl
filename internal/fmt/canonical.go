@@ -217,8 +217,14 @@ func sortEdgesSeq(root *yaml.Node) {
 	edges.Content = out
 }
 
-// sortNodesSeq stable-sorts nodes sequence by id (falls back to original order
-// for nodes with no id — but we preserve empty-id at end).
+// sortNodesSeq stable-sorts nodes sequence by id. Nodes with no id are kept in
+// their original relative order and placed after all id'd nodes — DIFY005 will
+// already be complaining about them anyway. The previous implementation mixed
+// "orig-order" and "id-order" in a single Less function, which produced a
+// non-transitive comparator for inputs like [b, "", a] (A<B because one side
+// was empty; B<C because empty; but A<C required "b"<"a", which is false).
+// The resulting order was silently unsorted. We now partition first and sort
+// each half independently.
 func sortNodesSeq(root *yaml.Node) {
 	nodes := findSeq(root, []string{"workflow", "graph", "nodes"})
 	if nodes == nil {
@@ -229,20 +235,23 @@ func sortNodesSeq(root *yaml.Node) {
 		id   string
 		orig int
 	}
-	var items []item
+	var withID, noID []item
 	for i, c := range nodes.Content {
 		id := mapStringField(c, "id")
-		items = append(items, item{node: c, id: id, orig: i})
-	}
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].id == "" || items[j].id == "" {
-			return items[i].orig < items[j].orig
+		if id == "" {
+			noID = append(noID, item{node: c, id: id, orig: i})
+		} else {
+			withID = append(withID, item{node: c, id: id, orig: i})
 		}
-		return items[i].id < items[j].id
-	})
-	out := make([]*yaml.Node, len(items))
-	for i, it := range items {
-		out[i] = it.node
+	}
+	sort.SliceStable(withID, func(i, j int) bool { return withID[i].id < withID[j].id })
+	// noID stays in insertion order via the stable partition above.
+	out := make([]*yaml.Node, 0, len(withID)+len(noID))
+	for _, it := range withID {
+		out = append(out, it.node)
+	}
+	for _, it := range noID {
+		out = append(out, it.node)
 	}
 	nodes.Content = out
 }

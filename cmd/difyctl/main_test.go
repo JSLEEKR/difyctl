@@ -486,3 +486,60 @@ func TestRunFmt_EmptyFile(t *testing.T) {
 		t.Fatalf("fmt -w on empty wrote bytes: %q", b)
 	}
 }
+
+// TestRunFmt_FileSizeCap is the Cycle F regression: Cycle A added a 32 MiB
+// file-size cap to parse.LoadFile so lint/diff cannot be OOM'd by a hostile
+// input, but `fmt` used os.ReadFile directly and silently accepted files of
+// any size. A 40 MiB file was happily loaded and then re-serialised. The cap
+// now applies to `fmt` too, via cmd/difyctl.readFileCapped. We write a file
+// one byte past the cap and assert refusal; we also assert that `-w` did not
+// corrupt the original bytes.
+func TestRunFmt_FileSizeCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("allocates ~32 MiB")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "huge.yml")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := bytes.Repeat([]byte("a"), 1024)
+	// Write MaxFileSize+1024 bytes — comfortably past the cap.
+	for written := int64(0); written <= 32*1024*1024; written += int64(len(chunk)) {
+		if _, werr := f.Write(chunk); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+	if cerr := f.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	origSize := int64(0)
+	if fi, serr := os.Stat(p); serr == nil {
+		origSize = fi.Size()
+	}
+
+	var stdout, stderr bytes.Buffer
+	code, err := runFmt([]string{"-w", p}, &stdout, &stderr)
+	if code != 3 || err == nil {
+		t.Fatalf("want (3, err) for oversize input, got (%d, %v)", code, err)
+	}
+	// -w must not have rewritten the (capped) file with the truncated prefix.
+	fi, _ := os.Stat(p)
+	if fi.Size() != origSize {
+		t.Fatalf("fmt -w on oversize file rewrote bytes: orig=%d now=%d", origSize, fi.Size())
+	}
+}
+
+// TestRunFmt_DirectoryRejected guards that passing a directory yields a clean
+// IO error (exit 3) rather than a confusing yaml.Unmarshal failure. os.Open of
+// a directory succeeds on Unix; the readFileCapped helper must catch the
+// IsDir case before io.ReadAll happily slurps the directory entries.
+func TestRunFmt_DirectoryRejected(t *testing.T) {
+	dir := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	code, err := runFmt([]string{dir}, &stdout, &stderr)
+	if code != 3 || err == nil {
+		t.Fatalf("want (3, err) for directory arg, got (%d, %v)", code, err)
+	}
+}

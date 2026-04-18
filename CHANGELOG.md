@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.1] — 2026-04-19 (Cycle C / D / E hardening)
+## [1.0.1] — 2026-04-19 (Cycle C / D / E / F hardening)
+
+### Fixed (Cycle F)
+- `fmt` now enforces the 32 MiB file-size cap that Cycle A added to `lint`/`diff`. Previously `difyctl fmt` used `os.ReadFile` directly, which happily slurped files of arbitrary size — a hostile 40 MiB YAML would OOM the process. The cap now applies to all three subcommands uniformly.
+- `fmt` on a directory argument now fails with a clean `read X: is a directory` error (exit 3) instead of letting `io.ReadAll` slurp raw directory bytes into `yaml.Unmarshal`.
+- `fmt` node-sort is now transitive for mixed id / no-id inputs. The previous `Less` fell back to original-index comparison whenever either side had an empty id, which is non-transitive (e.g. `[c, "", a, b]` stayed in insertion order). Id-bearing nodes now sort alphabetically; empty-id nodes keep their relative insertion order after.
+
 
 ### Changed
 - `diff --format json` now emits a uniform `{changes: [...], error: null | "..."}` envelope on BOTH success and error paths. Previously success emitted a bare JSON array while error emitted an object, so `jq` filters like `.changes[]` could not unify the two without branching on exit code. Consumers that parsed `.changes[]` already keep working; consumers that assumed a top-level array must switch to `.changes[]`.
